@@ -1,0 +1,29 @@
+<div class="list-stack">
+  {% for item in items %}
+    <article class="panel" data-testid="hub-stack-card-{{ item.slug }}">
+      <div style="display:flex;justify-content:space-between;gap:18px;">
+        <div>
+          <h3 style="margin:0 0 6px;">{{ item.title }}</h3>
+          <p class="muted">{{ item.description }}</p>
+          <div class="tool-list">
+            {% for entry in item["items"] %}
+              <span class="tool-chip">{{ entry.name }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="meta-grid" style="grid-template-columns:1fr;">
+          <div class="meta-pair"><strong>Rating</strong><span>{{ item.rating }}</span></div>
+          <div class="meta-pair"><strong>Imports</strong><span>{{ item.imports_count }}</span></div>
+          <div class="meta-pair"><strong>Recommended Model</strong><span>{{ item.recommended_model }}</span></div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+        <a class="button secondary" href="/stacks/{{ item.slug }}">View Stack</a>
+      </div>
+    </article>
+  {% else %}
+    <section class="panel">
+      <strong>No stack matched this search.</strong>
+    </section>
+  {% endfor %}
+</div>

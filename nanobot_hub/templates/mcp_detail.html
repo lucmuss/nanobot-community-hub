@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block body %}
+  <div class="panel-grid two">
+    <section class="panel">
+      <p class="eyebrow">Overview</p>
+      <h2 style="margin-top:0;">{{ item.name }}</h2>
+      <p class="muted">{{ item.description }}</p>
+      <div class="tool-list" style="margin: 14px 0;">
+        <span class="pill {% if item.status == 'active' %}good{% elif item.status == 'needs_configuration' %}warn{% else %}bad{% endif %}">{{ item.status|replace('_', ' ')|title }}</span>
+        {% if item.verified %}<span class="pill neutral">Verified</span>{% endif %}
+      </div>
+      <div class="meta-grid">
+        <div class="meta-pair"><strong>Repository</strong><span class="mono">{{ item.repo_url }}</span></div>
+        <div class="meta-pair"><strong>Install Method</strong><span>{{ item.install_method }}</span></div>
+        <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
+        <div class="meta-pair"><strong>Success Rate</strong><span>{{ "%.0f"|format(item.success_rate * 100) }}%</span></div>
+        <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+        <div class="meta-pair"><strong>Recent Telemetry Runs</strong><span>{{ item.recent_runs }}</span></div>
+      </div>
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Recommended Config</p>
+      {% if item.recommended_config %}
+        <div class="meta-grid">
+          <div class="meta-pair"><strong>Transport</strong><span>{{ item.recommended_config.transport }}</span></div>
+          <div class="meta-pair"><strong>Timeout</strong><span>{{ item.recommended_config.timeout }} seconds</span></div>
+          <div class="meta-pair"><strong>Retries</strong><span>{{ item.recommended_config.retries }}</span></div>
+          <div class="meta-pair"><strong>Confidence</strong><span>{{ "%.0f"|format(item.recommended_config.confidence_score * 100) }}%</span></div>
+          <div class="meta-pair"><strong>Evidence</strong><span>{{ item.recommended_config.based_on_instances }} instances</span></div>
+        </div>
+      {% else %}
+        <p class="muted">No community recommendation is available yet.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <div class="panel-grid two" style="margin-top:24px;">
+    <section class="panel">
+      <p class="eyebrow">Tools</p>
+      <div class="tool-list">
+        {% for tool in item.tools %}
+          <span class="tool-chip">{{ tool }}</span>
+        {% endfor %}
+      </div>
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Known Issues</p>
+      {% for issue in item.known_issues %}
+        <div class="stat-line"><span>{{ issue }}</span></div>
+      {% else %}
+        <p class="muted">No known issues are currently tracked.</p>
+      {% endfor %}
+    </section>
+  </div>
+{% endblock %}

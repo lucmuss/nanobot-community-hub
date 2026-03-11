@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel hero-panel" style="margin-bottom:24px;">
+    <p class="eyebrow">Community Stats</p>
+    <h2 style="margin:0 0 8px;">Live registry and telemetry overview</h2>
+    <p class="muted" style="margin:0;">This page shows the first V1 community intelligence signals: registry size, active instances, daily runs, and the strongest MCP entries right now.</p>
+  </section>
+
+  <div class="card-grid three">
+    <section class="card"><p class="eyebrow">Registry</p><strong style="font-size:1.8rem;">{{ overview.registry_count }}</strong><p class="muted">Tracked MCP servers</p></section>
+    <section class="card"><p class="eyebrow">Active Instances</p><strong style="font-size:1.8rem;">{{ overview.active_instances }}</strong><p class="muted">Across known community setups</p></section>
+    <section class="card"><p class="eyebrow">Runs Today</p><strong style="font-size:1.8rem;">{{ overview.runs_today }}</strong><p class="muted">Telemetry events received today</p></section>
+  </div>
+
+  <section class="panel" style="margin-top:24px;">
+    <p class="eyebrow">Top MCP Servers</p>
+    {% for item in overview.top_mcps %}
+      <div class="stat-line">
+        <div>
+          <strong>{{ item.name }}</strong>
+          <div class="muted">{{ item.active_instances }} active instances · {{ item.installs }} installs</div>
+        </div>
+        <span class="pill good">{{ "%.0f"|format(item.success_rate * 100) }}%</span>
+      </div>
+    {% endfor %}
+  </section>
+{% endblock %}

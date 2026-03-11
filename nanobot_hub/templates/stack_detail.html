@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel">
+    <p class="eyebrow">Stack</p>
+    <h2 style="margin-top:0;">{{ item.title }}</h2>
+    <p class="muted">{{ item.description }}</p>
+    <div class="meta-grid">
+      <div class="meta-pair"><strong>Use Case</strong><span>{{ item.use_case }}</span></div>
+      <div class="meta-pair"><strong>Recommended Model</strong><span>{{ item.recommended_model }}</span></div>
+      <div class="meta-pair"><strong>Imports</strong><span>{{ item.imports_count }}</span></div>
+      <div class="meta-pair"><strong>Rating</strong><span>{{ item.rating }}</span></div>
+    </div>
+  </section>
+  <div class="panel-grid two" style="margin-top:24px;">
+    <section class="panel">
+      <p class="eyebrow">Included MCP Servers</p>
+      {% for entry in item["items"] %}
+        <div class="stat-line">
+          <span>{{ entry.name }}</span>
+          <a class="button secondary" href="/mcp/{{ entry.slug }}">Open</a>
+        </div>
+      {% endfor %}
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Example Prompt</p>
+      <div class="meta-pair">
+        <strong>Prompt</strong>
+        <span>{{ item.example_prompt }}</span>
+      </div>
+    </section>
+  </div>
+{% endblock %}

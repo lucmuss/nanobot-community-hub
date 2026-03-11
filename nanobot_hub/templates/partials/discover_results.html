@@ -1,0 +1,41 @@
+<div class="list-stack">
+  {% for item in items %}
+    <article class="panel" data-testid="hub-mcp-card-{{ item.slug }}">
+      <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;">
+        <div>
+          <h3 style="margin:0 0 6px;">{{ item.name }}</h3>
+          <p class="muted" style="margin:0 0 10px;">{{ item.description }}</p>
+          <div class="tag-list" style="margin-bottom:10px;">
+            <span class="tag-chip">{{ item.category }}</span>
+            <span class="tag-chip">{{ item.language }}</span>
+            <span class="tag-chip">Install {{ item.install_method }}</span>
+            {% if item.verified %}<span class="tag-chip">Verified</span>{% endif %}
+          </div>
+          <div class="tool-list">
+            {% for tool in item.tools[:4] %}
+              <span class="tool-chip">{{ tool }}</span>
+            {% endfor %}
+          </div>
+        </div>
+        <div style="min-width:230px;">
+          <div class="meta-grid" style="grid-template-columns:1fr;">
+            <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
+            <div class="meta-pair"><strong>Success Rate</strong><span>{{ "%.0f"|format(item.success_rate * 100) }}%</span></div>
+            <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:16px;">
+        <div class="muted mono">{{ item.repo_url }}</div>
+        <div style="display:flex;gap:8px;">
+          <a class="button secondary" href="/mcp/{{ item.slug }}">View Details</a>
+        </div>
+      </div>
+    </article>
+  {% else %}
+    <section class="panel">
+      <strong>No MCPs matched this filter.</strong>
+      <p class="muted">Try a broader search or switch the category filter.</p>
+    </section>
+  {% endfor %}
+</div>

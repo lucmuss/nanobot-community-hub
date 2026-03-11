@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel" style="margin-bottom:24px;">
+    <p class="eyebrow">Stacks</p>
+    <h2 style="margin-top:0;">Import proven MCP combinations</h2>
+    <form class="search-form" hx-get="/partials/stacks-results" hx-target="#stack-results" hx-trigger="submit, keyup changed delay:300ms from:#stacks-q">
+      <div class="search-row" style="grid-template-columns:minmax(0,1fr) auto;">
+        <input id="stacks-q" type="text" name="q" value="{{ query }}" placeholder="Search stack name or use case" data-testid="hub-stacks-query">
+        <button type="submit" data-testid="hub-stacks-search">Search</button>
+      </div>
+    </form>
+  </section>
+  <section id="stack-results">
+    {% include "partials/stacks_results.html" %}
+  </section>
+{% endblock %}

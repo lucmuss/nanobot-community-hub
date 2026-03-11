@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{{ title }} | {{ instance_name }}</title>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link rel="stylesheet" href="/static/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <p class="eyebrow">Nanobot Hub</p>
+          <strong>{{ instance_name }}</strong>
+          <p class="muted">Community-powered MCP intelligence</p>
+        </div>
+        <nav class="nav">
+          <a href="/discover" class="{% if nav_active == 'discover' %}active{% endif %}" data-testid="hub-nav-discover">Discover MCP</a>
+          <a href="/stacks" class="{% if nav_active == 'stacks' %}active{% endif %}" data-testid="hub-nav-stacks">MCP Stacks</a>
+          <a href="/showcase" class="{% if nav_active == 'showcase' %}active{% endif %}" data-testid="hub-nav-showcase">Showcase</a>
+          <a href="/community-stats" class="{% if nav_active == 'stats' %}active{% endif %}" data-testid="hub-nav-stats">Community Stats</a>
+        </nav>
+        <div class="sidebar-meta">
+          <div class="sidebar-meta-row">
+            <span>Version</span>
+            <strong>{{ current_version }}</strong>
+          </div>
+          {% if public_url %}
+            <div class="sidebar-meta-row">
+              <span>Public URL</span>
+              <strong>{{ public_url }}</strong>
+            </div>
+          {% endif %}
+        </div>
+      </aside>
+      <main class="content">
+        <div class="content-inner">
+          <div class="topbar">
+            <div>
+              <p class="eyebrow">Nanobot Ecosystem</p>
+              <h1>{{ title }}</h1>
+            </div>
+            <div class="topbar-actions">
+              <a class="button secondary" href="/discover">Marketplace</a>
+              <a class="button secondary" href="/community-stats">Community Stats</a>
+              <a class="button" href="/stacks">Explore Stacks</a>
+            </div>
+          </div>
+          {% block body %}{% endblock %}
+        </div>
+      </main>
+    </div>
+  </body>
+</html>

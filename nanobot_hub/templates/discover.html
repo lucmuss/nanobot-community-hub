@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel hero-panel" style="margin-bottom: 24px;">
+    <p class="eyebrow">Marketplace</p>
+    <h2 style="margin: 0 0 8px;">Find stable MCP servers with community-backed configuration hints</h2>
+    <p class="muted" style="margin: 0;">Browse reliable MCP servers, inspect their tools, and compare recommended config before importing them into Nanobot.</p>
+  </section>
+
+  <section class="panel" style="margin-bottom: 24px;">
+    <form class="search-form" hx-get="/partials/discover-results" hx-target="#discover-results" hx-trigger="submit, keyup changed delay:300ms from:#discover-q, change from:#discover-category, change from:#discover-sort">
+      <div class="search-row">
+        <input id="discover-q" type="text" name="q" value="{{ query }}" placeholder="Search MCP name, repo, or capability" data-testid="hub-discover-query">
+        <select id="discover-category" name="category" data-testid="hub-discover-category">
+          <option value="">All categories</option>
+          {% for item in categories %}
+            <option value="{{ item }}" {% if category == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+        <select id="discover-sort" name="sort" data-testid="hub-discover-sort">
+          <option value="trending" {% if sort == 'trending' %}selected{% endif %}>Trending</option>
+          <option value="reliable" {% if sort == 'reliable' %}selected{% endif %}>Most Reliable</option>
+          <option value="installed" {% if sort == 'installed' %}selected{% endif %}>Most Installed</option>
+          <option value="new" {% if sort == 'new' %}selected{% endif %}>New</option>
+        </select>
+        <button type="submit" data-testid="hub-discover-search">Search</button>
+      </div>
+    </form>
+  </section>
+
+  <div class="panel-grid two">
+    <section class="panel">
+      <p class="eyebrow">Registry Overview</p>
+      <div class="meta-grid">
+        <div class="meta-pair"><strong>Registry entries</strong><span>{{ overview.registry_count }}</span></div>
+        <div class="meta-pair"><strong>Verified MCPs</strong><span>{{ overview.verified_count }}</span></div>
+        <div class="meta-pair"><strong>Active instances</strong><span>{{ overview.active_instances }}</span></div>
+        <div class="meta-pair"><strong>Runs today</strong><span>{{ overview.runs_today }}</span></div>
+      </div>
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Top MCP Servers</p>
+      {% for item in overview.top_mcps[:3] %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.active_instances }} active instances</div>
+          </div>
+          <span class="pill good">{{ "%.0f"|format(item.success_rate * 100) }}%</span>
+        </div>
+      {% endfor %}
+    </section>
+  </div>
+
+  <section id="discover-results" style="margin-top: 24px;">
+    {% include "partials/discover_results.html" %}
+  </section>
+{% endblock %}

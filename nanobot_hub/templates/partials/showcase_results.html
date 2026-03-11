@@ -1,0 +1,27 @@
+<div class="list-stack">
+  {% for item in items %}
+    <article class="panel" data-testid="hub-showcase-card-{{ item.slug }}">
+      <p class="eyebrow">{{ item.category }}</p>
+      <h3 style="margin-top:0;">{{ item.title }}</h3>
+      <p class="muted">{{ item.description }}</p>
+      {% if item.stack %}
+        <div class="meta-pair" style="margin-bottom:14px;">
+          <strong>Stack</strong>
+          <span>{{ item.stack.title }}</span>
+        </div>
+      {% endif %}
+      <div class="meta-grid">
+        <div class="meta-pair"><strong>Imports</strong><span>{{ item.imports_count }}</span></div>
+        <div class="meta-pair"><strong>Upvotes</strong><span>{{ item.upvotes_count }}</span></div>
+      </div>
+      <div class="meta-pair" style="margin-top:14px;">
+        <strong>Example Prompt</strong>
+        <span>{{ item.example_prompt }}</span>
+      </div>
+    </article>
+  {% else %}
+    <section class="panel">
+      <strong>No showcase entries matched this filter.</strong>
+    </section>
+  {% endfor %}
+</div>

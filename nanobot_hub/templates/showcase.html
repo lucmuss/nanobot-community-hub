@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel" style="margin-bottom:24px;">
+    <p class="eyebrow">Showcase</p>
+    <h2 style="margin-top:0;">See how other Nanobot users combine MCPs in practice</h2>
+    <form class="search-form" hx-get="/partials/showcase-results" hx-target="#showcase-results" hx-trigger="submit, keyup changed delay:300ms from:#showcase-q, change from:#showcase-category">
+      <div class="search-row" style="grid-template-columns:minmax(0,1fr) 220px auto;">
+        <input id="showcase-q" type="text" name="q" value="{{ query }}" placeholder="Search title or use case" data-testid="hub-showcase-query">
+        <select id="showcase-category" name="category" data-testid="hub-showcase-category">
+          <option value="">All categories</option>
+          {% for entry in categories %}
+            <option value="{{ entry }}" {% if category == entry %}selected{% endif %}>{{ entry }}</option>
+          {% endfor %}
+        </select>
+        <button type="submit" data-testid="hub-showcase-search">Search</button>
+      </div>
+    </form>
+  </section>
+  <section id="showcase-results">
+    {% include "partials/showcase_results.html" %}
+  </section>
+{% endblock %}
