@@ -3,6 +3,9 @@ from __future__ import annotations
 from fastapi.testclient import TestClient
 
 
+AUTH_HEADERS = {"Authorization": "Bearer hub-test-api-token"}
+
+
 def test_marketplace_filters_and_sorting(client: TestClient) -> None:
     response = client.get("/api/v1/marketplace", params={"category": "Research", "sort": "installed"})
     assert response.status_code == 200
@@ -114,6 +117,7 @@ def test_telemetry_aggregation_updates_detail_and_overview(client: TestClient) -
 def test_submit_mcp_api_creates_new_registry_entry(client: TestClient) -> None:
     response = client.post(
         "/api/v1/submissions/mcp",
+        headers=AUTH_HEADERS,
         json={
             "repo_url": "https://github.com/example/super-browser-mcp",
             "name": "Super Browser MCP",
@@ -144,6 +148,7 @@ def test_submit_mcp_api_creates_new_registry_entry(client: TestClient) -> None:
 def test_submit_mcp_api_deduplicates_known_repositories(client: TestClient) -> None:
     response = client.post(
         "/api/v1/submissions/mcp",
+        headers=AUTH_HEADERS,
         json={
             "repo_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp",
             "name": "Chrome DevTools MCP",
@@ -161,6 +166,7 @@ def test_submit_mcp_api_deduplicates_known_repositories(client: TestClient) -> N
 def test_submit_mcp_api_rejects_invalid_or_secret_like_payloads(client: TestClient) -> None:
     invalid_repo = client.post(
         "/api/v1/submissions/mcp",
+        headers=AUTH_HEADERS,
         json={"repo_url": "https://gitlab.com/example/not-supported"},
     )
     assert invalid_repo.status_code == 400
@@ -168,6 +174,7 @@ def test_submit_mcp_api_rejects_invalid_or_secret_like_payloads(client: TestClie
 
     secret_like = client.post(
         "/api/v1/submissions/mcp",
+        headers=AUTH_HEADERS,
         json={
             "repo_url": "https://github.com/example/secret-mcp",
             "description": "contains sk-1234567890abcd token",
@@ -175,3 +182,70 @@ def test_submit_mcp_api_rejects_invalid_or_secret_like_payloads(client: TestClie
     )
     assert secret_like.status_code == 400
     assert "secret-like content" in secret_like.json()["detail"]
+
+
+def test_submit_stack_and_showcase_apis_create_private_entries(client: TestClient) -> None:
+    stack = client.post(
+        "/api/v1/submissions/stack",
+        headers=AUTH_HEADERS,
+        json={
+            "title": "Docs Research Stack",
+            "description": "Context-heavy docs analysis stack.",
+            "use_case": "Research documentation and summarize stable recommendations.",
+            "recommended_model": "moonshot/kimi-k2.5",
+            "example_prompt": "Research the library docs and summarize important API changes.",
+            "items": ["context7", "chrome-devtools-mcp"],
+            "is_public": False,
+            "created_by": "hub-admin",
+        },
+    )
+    assert stack.status_code == 201
+    stack_payload = stack.json()
+    assert stack_payload["item"]["slug"] == "docs-research-stack"
+    assert stack_payload["item"]["status"] == "draft"
+    assert stack_payload["item"]["is_public"] is False
+
+    showcase = client.post(
+        "/api/v1/submissions/showcase",
+        headers=AUTH_HEADERS,
+        json={
+            "title": "Docs Research Assistant",
+            "description": "Practical docs research setup.",
+            "use_case": "Use MCPs to inspect docs and browser flows together.",
+            "category": "Research",
+            "example_prompt": "Inspect the docs and extract the most relevant endpoints.",
+            "stack_slug": stack_payload["item"]["slug"],
+            "is_public": False,
+            "created_by": "hub-admin",
+        },
+    )
+    assert showcase.status_code == 201
+    showcase_payload = showcase.json()
+    assert showcase_payload["item"]["slug"] == "docs-research-assistant"
+    assert showcase_payload["item"]["status"] == "draft"
+    assert showcase_payload["item"]["is_public"] is False
+
+
+def test_install_and_import_metrics_endpoints_update_counts(client: TestClient) -> None:
+    install = client.post("/api/v1/marketplace/context7/installs")
+    assert install.status_code == 202
+    assert install.json()["result"]["installs"] >= 1
+
+    stack = client.post(
+        "/api/v1/submissions/stack",
+        headers=AUTH_HEADERS,
+        json={
+            "title": "Automation Bundle",
+            "description": "Automation focused MCP bundle.",
+            "use_case": "Use browser and GitHub tools together.",
+            "recommended_model": "moonshot/kimi-k2.5",
+            "example_prompt": "Review a repo and inspect browser output.",
+            "items": ["chrome-devtools-mcp", "github-mcp-server"],
+            "is_public": True,
+            "created_by": "hub-admin",
+        },
+    )
+    stack_slug = stack.json()["item"]["slug"]
+    stack_import = client.post(f"/api/v1/stacks/{stack_slug}/imports")
+    assert stack_import.status_code == 202
+    assert stack_import.json()["result"]["imports_count"] == 1

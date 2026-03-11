@@ -23,9 +23,12 @@ from sqlalchemy import (
     and_,
     case,
     create_engine,
+    delete,
     func,
+    inspect,
     or_,
     select,
+    update,
 )
 from sqlalchemy.engine import Engine
 
@@ -114,6 +117,16 @@ telemetry_events = Table(
     Column("created_at", String(40), nullable=False),
 )
 
+hub_admin_users = Table(
+    "hub_admin_users",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("username", String(255), nullable=False, unique=True),
+    Column("email", String(255), nullable=False, unique=True),
+    Column("password_hash", Text, nullable=False),
+    Column("created_at", String(40), nullable=False),
+)
+
 mcp_stacks = Table(
     "mcp_stacks",
     metadata,
@@ -125,7 +138,11 @@ mcp_stacks = Table(
     Column("example_prompt", Text, nullable=False),
     Column("rating", Float, nullable=False, default=0.0),
     Column("imports_count", Integer, nullable=False, default=0),
+    Column("status", String(120), nullable=False, default="published"),
+    Column("is_public", Boolean, nullable=False, default=True),
+    Column("created_by", String(255), nullable=False, default=""),
     Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False, default=""),
 )
 
 mcp_stack_items = Table(
@@ -145,11 +162,16 @@ showcase_entries = Table(
     Column("title", String(255), nullable=False),
     Column("description", Text, nullable=False),
     Column("category", String(120), nullable=False),
+    Column("use_case", Text, nullable=False, default=""),
     Column("example_prompt", Text, nullable=False),
     Column("stack_slug", String(255), nullable=False),
     Column("imports_count", Integer, nullable=False, default=0),
     Column("upvotes_count", Integer, nullable=False, default=0),
+    Column("status", String(120), nullable=False, default="published"),
+    Column("is_public", Boolean, nullable=False, default=True),
+    Column("created_by", String(255), nullable=False, default=""),
     Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False, default=""),
 )
 
 mcp_submissions = Table(
@@ -416,10 +438,55 @@ class HubStore:
 
     def init(self) -> None:
         metadata.create_all(self.engine)
+        self._ensure_schema_extras()
         with self.engine.begin() as conn:
             count = conn.execute(select(func.count()).select_from(mcp_servers)).scalar_one()
             if int(count or 0) == 0:
                 self._seed(conn)
+
+    def _ensure_schema_extras(self) -> None:
+        inspector = inspect(self.engine)
+        columns_by_table = {
+            table_name: {column["name"] for column in inspector.get_columns(table_name)}
+            for table_name in ("mcp_stacks", "showcase_entries")
+        }
+        statements: list[str] = []
+
+        stack_columns = columns_by_table["mcp_stacks"]
+        if "status" not in stack_columns:
+            statements.append(self._alter_add_column("mcp_stacks", "status", "VARCHAR(120) NOT NULL DEFAULT 'published'"))
+        if "is_public" not in stack_columns:
+            statements.append(self._alter_add_column("mcp_stacks", "is_public", self._boolean_default_sql(True)))
+        if "created_by" not in stack_columns:
+            statements.append(self._alter_add_column("mcp_stacks", "created_by", "VARCHAR(255) NOT NULL DEFAULT ''"))
+        if "updated_at" not in stack_columns:
+            statements.append(self._alter_add_column("mcp_stacks", "updated_at", "VARCHAR(40) NOT NULL DEFAULT ''"))
+
+        showcase_columns = columns_by_table["showcase_entries"]
+        if "use_case" not in showcase_columns:
+            statements.append(self._alter_add_column("showcase_entries", "use_case", "TEXT NOT NULL DEFAULT ''"))
+        if "status" not in showcase_columns:
+            statements.append(self._alter_add_column("showcase_entries", "status", "VARCHAR(120) NOT NULL DEFAULT 'published'"))
+        if "is_public" not in showcase_columns:
+            statements.append(self._alter_add_column("showcase_entries", "is_public", self._boolean_default_sql(True)))
+        if "created_by" not in showcase_columns:
+            statements.append(self._alter_add_column("showcase_entries", "created_by", "VARCHAR(255) NOT NULL DEFAULT ''"))
+        if "updated_at" not in showcase_columns:
+            statements.append(self._alter_add_column("showcase_entries", "updated_at", "VARCHAR(40) NOT NULL DEFAULT ''"))
+
+        if not statements:
+            return
+        with self.engine.begin() as conn:
+            for statement in statements:
+                conn.exec_driver_sql(statement)
+
+    def _alter_add_column(self, table_name: str, column_name: str, column_sql: str) -> str:
+        return f"ALTER TABLE {table_name} ADD COLUMN {column_name} {column_sql}"
+
+    def _boolean_default_sql(self, value: bool) -> str:
+        if self.backend == "postgresql":
+            return f"BOOLEAN NOT NULL DEFAULT {'TRUE' if value else 'FALSE'}"
+        return f"BOOLEAN NOT NULL DEFAULT {1 if value else 0}"
 
     def _seed(self, conn) -> None:
         now = _utc_now()
@@ -472,7 +539,11 @@ class HubStore:
                     example_prompt=stack["example_prompt"],
                     rating=float(stack["rating"]),
                     imports_count=int(stack["imports_count"]),
+                    status="published",
+                    is_public=True,
+                    created_by="seed",
                     created_at=now,
+                    updated_at=now,
                 )
             )
             for index, item_slug in enumerate(stack["items"]):
@@ -492,19 +563,33 @@ class HubStore:
                     title=showcase["title"],
                     description=showcase["description"],
                     category=showcase["category"],
+                    use_case=showcase["description"],
                     example_prompt=showcase["example_prompt"],
                     stack_slug=showcase["stack_slug"],
                     imports_count=int(showcase["imports_count"]),
                     upvotes_count=int(showcase["upvotes_count"]),
+                    status="published",
+                    is_public=True,
+                    created_by="seed",
                     created_at=now,
+                    updated_at=now,
                 )
             )
 
-    def list_mcps(self, *, search: str = "", category: str = "", sort: str = "trending") -> list[dict[str, Any]]:
+    def list_mcps(
+        self,
+        *,
+        search: str = "",
+        category: str = "",
+        sort: str = "trending",
+        include_private: bool = False,
+    ) -> list[dict[str, Any]]:
         telemetry = self._telemetry_stats_by_slug()
         with self.engine.connect() as conn:
             stmt = select(mcp_servers)
             conditions = []
+            if not include_private:
+                conditions.append(mcp_servers.c.status != "rejected")
             if search:
                 query = f"%{search.lower()}%"
                 conditions.append(
@@ -535,10 +620,13 @@ class HubStore:
             )
         return items
 
-    def get_mcp(self, slug: str) -> dict[str, Any] | None:
+    def get_mcp(self, slug: str, *, include_private: bool = False) -> dict[str, Any] | None:
         telemetry = self._telemetry_stats_by_slug().get(slug, {})
         with self.engine.connect() as conn:
-            row = conn.execute(select(mcp_servers).where(mcp_servers.c.slug == slug)).mappings().first()
+            stmt = select(mcp_servers).where(mcp_servers.c.slug == slug)
+            if not include_private:
+                stmt = stmt.where(mcp_servers.c.status != "rejected")
+            row = conn.execute(stmt).mappings().first()
             if row is None:
                 return None
             item = self._build_mcp_summary(conn, row, telemetry, detailed=True)
@@ -582,32 +670,48 @@ class HubStore:
                 "recommended_config": dict(recommendation) if recommendation else None,
             }
 
-    def list_stacks(self, *, search: str = "") -> list[dict[str, Any]]:
+    def list_stacks(self, *, search: str = "", include_private: bool = False) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
             stmt = select(mcp_stacks)
+            conditions = []
+            if not include_private:
+                conditions.append(mcp_stacks.c.is_public.is_(True))
             if search:
                 query = f"%{search.lower()}%"
-                stmt = stmt.where(
+                conditions.append(
                     or_(
                         func.lower(mcp_stacks.c.title).like(query),
                         func.lower(mcp_stacks.c.description).like(query),
                     )
                 )
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
             stmt = stmt.order_by(mcp_stacks.c.rating.desc(), mcp_stacks.c.imports_count.desc())
             rows = conn.execute(stmt).mappings().all()
             return [self._build_stack_summary(conn, row) for row in rows]
 
-    def get_stack(self, slug: str) -> dict[str, Any] | None:
+    def get_stack(self, slug: str, *, include_private: bool = False) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
-            row = conn.execute(select(mcp_stacks).where(mcp_stacks.c.slug == slug)).mappings().first()
+            stmt = select(mcp_stacks).where(mcp_stacks.c.slug == slug)
+            if not include_private:
+                stmt = stmt.where(mcp_stacks.c.is_public.is_(True))
+            row = conn.execute(stmt).mappings().first()
             if row is None:
                 return None
             return self._build_stack_summary(conn, row, detailed=True)
 
-    def list_showcase(self, *, search: str = "", category: str = "") -> list[dict[str, Any]]:
+    def list_showcase(
+        self,
+        *,
+        search: str = "",
+        category: str = "",
+        include_private: bool = False,
+    ) -> list[dict[str, Any]]:
         with self.engine.connect() as conn:
             stmt = select(showcase_entries)
             conditions = []
+            if not include_private:
+                conditions.append(showcase_entries.c.is_public.is_(True))
             if search:
                 query = f"%{search.lower()}%"
                 conditions.append(
@@ -624,15 +728,33 @@ class HubStore:
             rows = conn.execute(stmt).mappings().all()
             items: list[dict[str, Any]] = []
             for row in rows:
-                stack_row = conn.execute(
-                    select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
-                ).mappings().first()
+                stack_stmt = select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+                if not include_private:
+                    stack_stmt = stack_stmt.where(mcp_stacks.c.is_public.is_(True))
+                stack_row = conn.execute(stack_stmt).mappings().first()
                 items.append(
                     {
                         **dict(row),
                         "stack": dict(stack_row) if stack_row else None,
                     }
                 )
+            return items
+
+    def list_recent_mcp_submissions(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(mcp_submissions)
+                .order_by(mcp_submissions.c.submitted_at.desc(), mcp_submissions.c.id.desc())
+                .limit(max(1, int(limit)))
+            ).mappings().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item["details"] = json.loads(str(item.pop("details_json", "{}")))
+                except json.JSONDecodeError:
+                    item["details"] = {}
+                items.append(item)
             return items
 
     def get_overview_stats(self) -> dict[str, Any]:
@@ -822,6 +944,237 @@ class HubStore:
             "item": item,
         }
 
+    def create_stack_submission(self, payload: dict[str, Any]) -> dict[str, Any]:
+        title = str(payload.get("title", "")).strip()
+        description = str(payload.get("description", "")).strip()
+        use_case = str(payload.get("use_case", "")).strip()
+        recommended_model = str(payload.get("recommended_model", "")).strip()
+        example_prompt = str(payload.get("example_prompt", "")).strip()
+        created_by = str(payload.get("created_by", "")).strip()
+        proposed_slug = self._normalize_submission_slug(str(payload.get("slug", "")).strip())
+        is_public = bool(payload.get("is_public"))
+
+        if not title or not description or not use_case:
+            raise ValueError("Title, description, and use case are required.")
+
+        if not recommended_model:
+            raise ValueError("Recommended model is required.")
+
+        items = self._normalize_stack_items(payload.get("items", []))
+        self._guard_submission_text(title, description, use_case, recommended_model, example_prompt, created_by, *items)
+
+        with self.engine.begin() as conn:
+            slug = self._allocate_generic_slug(conn, mcp_stacks, proposed_slug or title, fallback="stack")
+            item_slugs = self._resolve_stack_item_slugs(conn, items)
+            if not item_slugs:
+                raise ValueError("At least one valid MCP slug or GitHub repository URL is required for a stack.")
+
+            now = _utc_now()
+            conn.execute(
+                mcp_stacks.insert().values(
+                    slug=slug,
+                    title=title,
+                    description=description,
+                    use_case=use_case,
+                    recommended_model=recommended_model,
+                    example_prompt=example_prompt or use_case,
+                    rating=0.0,
+                    imports_count=0,
+                    status="published" if is_public else "draft",
+                    is_public=is_public,
+                    created_by=created_by,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            for index, item_slug in enumerate(item_slugs):
+                conn.execute(
+                    mcp_stack_items.insert().values(
+                        stack_slug=slug,
+                        mcp_slug=item_slug,
+                        required=True,
+                        sort_order=index,
+                    )
+                )
+        created = self.get_stack(slug, include_private=True)
+        return {
+            "created": True,
+            "item": created,
+        }
+
+    def create_showcase_submission(self, payload: dict[str, Any]) -> dict[str, Any]:
+        title = str(payload.get("title", "")).strip()
+        description = str(payload.get("description", "")).strip()
+        use_case = str(payload.get("use_case", "")).strip()
+        example_prompt = str(payload.get("example_prompt", "")).strip()
+        category = str(payload.get("category", "")).strip() or "Automation"
+        stack_slug = str(payload.get("stack_slug", "")).strip()
+        created_by = str(payload.get("created_by", "")).strip()
+        proposed_slug = self._normalize_submission_slug(str(payload.get("slug", "")).strip())
+        is_public = bool(payload.get("is_public"))
+
+        if not title or not description or not use_case or not example_prompt:
+            raise ValueError("Title, description, use case, and example prompt are required.")
+        if not stack_slug:
+            raise ValueError("A stack slug is required for showcase submissions.")
+
+        self._guard_submission_text(title, description, use_case, example_prompt, category, created_by, stack_slug)
+
+        with self.engine.begin() as conn:
+            stack_exists = conn.execute(
+                select(mcp_stacks.c.slug).where(mcp_stacks.c.slug == stack_slug)
+            ).scalar_one_or_none()
+            if stack_exists is None:
+                raise ValueError("The referenced stack does not exist.")
+
+            slug = self._allocate_generic_slug(conn, showcase_entries, proposed_slug or title, fallback="showcase")
+            now = _utc_now()
+            conn.execute(
+                showcase_entries.insert().values(
+                    slug=slug,
+                    title=title,
+                    description=description,
+                    category=category,
+                    use_case=use_case,
+                    example_prompt=example_prompt,
+                    stack_slug=stack_slug,
+                    imports_count=0,
+                    upvotes_count=0,
+                    status="published" if is_public else "draft",
+                    is_public=is_public,
+                    created_by=created_by,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        item = self.get_showcase(slug, include_private=True)
+        return {"created": True, "item": item}
+
+    def get_showcase(self, slug: str, *, include_private: bool = False) -> dict[str, Any] | None:
+        with self.engine.connect() as conn:
+            stmt = select(showcase_entries).where(showcase_entries.c.slug == slug)
+            if not include_private:
+                stmt = stmt.where(showcase_entries.c.is_public.is_(True))
+            row = conn.execute(stmt).mappings().first()
+            if row is None:
+                return None
+            stack_row = conn.execute(
+                select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+            ).mappings().first()
+            return {
+                **dict(row),
+                "stack": dict(stack_row) if stack_row else None,
+            }
+
+    def list_mcp_moderation_queue(self) -> list[dict[str, Any]]:
+        telemetry = self._telemetry_stats_by_slug()
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(mcp_servers)
+                .where(or_(mcp_servers.c.status == "submitted", mcp_servers.c.status == "rejected", mcp_servers.c.verified.is_(False)))
+                .order_by(mcp_servers.c.updated_at.desc(), mcp_servers.c.created_at.desc())
+            ).mappings().all()
+            return [self._build_mcp_summary(conn, row, telemetry.get(str(row["slug"]), {}), detailed=True) for row in rows]
+
+    def list_stack_moderation_queue(self) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(mcp_stacks)
+                .where(or_(mcp_stacks.c.is_public.is_(False), mcp_stacks.c.status != "published"))
+                .order_by(mcp_stacks.c.updated_at.desc(), mcp_stacks.c.created_at.desc())
+            ).mappings().all()
+            return [self._build_stack_summary(conn, row, detailed=True) for row in rows]
+
+    def list_showcase_moderation_queue(self) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(showcase_entries)
+                .where(or_(showcase_entries.c.is_public.is_(False), showcase_entries.c.status != "published"))
+                .order_by(showcase_entries.c.updated_at.desc(), showcase_entries.c.created_at.desc())
+            ).mappings().all()
+            items: list[dict[str, Any]] = []
+            for row in rows:
+                stack_row = conn.execute(
+                    select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+                ).mappings().first()
+                items.append({**dict(row), "stack": dict(stack_row) if stack_row else None})
+            return items
+
+    def moderate_mcp(self, slug: str, *, action: str) -> dict[str, Any]:
+        normalized = str(action).strip().lower()
+        if normalized not in {"verify", "reject"}:
+            raise ValueError("Unsupported moderation action.")
+        with self.engine.begin() as conn:
+            row = conn.execute(select(mcp_servers).where(mcp_servers.c.slug == slug)).mappings().first()
+            if row is None:
+                raise ValueError("MCP server not found.")
+            conn.execute(
+                update(mcp_servers)
+                .where(mcp_servers.c.slug == slug)
+                .values(
+                    verified=(normalized == "verify"),
+                    status="active" if normalized == "verify" else "rejected",
+                    updated_at=_utc_now(),
+                )
+            )
+        item = self.get_mcp(slug, include_private=True)
+        if item is None:
+            raise ValueError("MCP server not found.")
+        return item
+
+    def moderate_stack(self, slug: str, *, action: str) -> dict[str, Any]:
+        normalized = str(action).strip().lower()
+        if normalized not in {"publish", "hide"}:
+            raise ValueError("Unsupported moderation action.")
+        with self.engine.begin() as conn:
+            row = conn.execute(select(mcp_stacks).where(mcp_stacks.c.slug == slug)).mappings().first()
+            if row is None:
+                raise ValueError("Stack not found.")
+            conn.execute(
+                update(mcp_stacks)
+                .where(mcp_stacks.c.slug == slug)
+                .values(
+                    is_public=(normalized == "publish"),
+                    status="published" if normalized == "publish" else "draft",
+                    updated_at=_utc_now(),
+                )
+            )
+        item = self.get_stack(slug, include_private=True)
+        if item is None:
+            raise ValueError("Stack not found.")
+        return item
+
+    def moderate_showcase(self, slug: str, *, action: str) -> dict[str, Any]:
+        normalized = str(action).strip().lower()
+        if normalized not in {"publish", "hide"}:
+            raise ValueError("Unsupported moderation action.")
+        with self.engine.begin() as conn:
+            row = conn.execute(select(showcase_entries).where(showcase_entries.c.slug == slug)).mappings().first()
+            if row is None:
+                raise ValueError("Showcase entry not found.")
+            conn.execute(
+                update(showcase_entries)
+                .where(showcase_entries.c.slug == slug)
+                .values(
+                    is_public=(normalized == "publish"),
+                    status="published" if normalized == "publish" else "draft",
+                    updated_at=_utc_now(),
+                )
+            )
+        item = self.get_showcase(slug, include_private=True)
+        if item is None:
+            raise ValueError("Showcase entry not found.")
+        return item
+
+    def increment_mcp_install(self, slug: str) -> dict[str, int]:
+        return self._increment_counter(mcp_servers, slug, "installs")
+
+    def increment_stack_import(self, slug: str) -> dict[str, int]:
+        return self._increment_counter(mcp_stacks, slug, "imports_count")
+
+    def increment_showcase_import(self, slug: str) -> dict[str, int]:
+        return self._increment_counter(showcase_entries, slug, "imports_count")
+
     def categories(self) -> list[str]:
         with self.engine.connect() as conn:
             rows = conn.execute(
@@ -1008,6 +1361,52 @@ class HubStore:
                 return candidate
             suffix += 1
 
+    def _allocate_generic_slug(self, conn, table: Table, raw_value: str, *, fallback: str) -> str:
+        base = self._normalize_submission_slug(raw_value) or fallback
+        candidate = base
+        suffix = 2
+        while conn.execute(select(table.c.slug).where(table.c.slug == candidate)).scalar_one_or_none() is not None:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+        return candidate
+
+    def _resolve_stack_item_slugs(self, conn, items: list[str]) -> list[str]:
+        resolved: list[str] = []
+        for item in items:
+            value = str(item).strip()
+            if not value:
+                continue
+            candidate = value
+            if value.startswith("http"):
+                candidate = _normalize_repo_url(value)
+                row = conn.execute(
+                    select(mcp_servers.c.slug).where(mcp_servers.c.repo_url == candidate)
+                ).mappings().first()
+            else:
+                row = conn.execute(
+                    select(mcp_servers.c.slug).where(mcp_servers.c.slug == candidate)
+                ).mappings().first()
+            if row is None:
+                raise ValueError(f"Unknown MCP reference in stack: {value}")
+            slug = str(row["slug"])
+            if slug not in resolved:
+                resolved.append(slug)
+        return resolved
+
+    def _increment_counter(self, table: Table, slug: str, column_name: str) -> dict[str, int]:
+        column = getattr(table.c, column_name)
+        with self.engine.begin() as conn:
+            row = conn.execute(select(column).where(table.c.slug == slug)).first()
+            if row is None:
+                raise ValueError("Tracked item not found.")
+            current = int(row[0] or 0)
+            conn.execute(
+                update(table)
+                .where(table.c.slug == slug)
+                .values(**{column_name: current + 1, "updated_at": _utc_now()} if "updated_at" in table.c else {column_name: current + 1})
+            )
+        return {"slug": slug, column_name: current + 1}
+
     @staticmethod
     def _normalize_submission_slug(raw: str) -> str:
         value = re.sub(r"[^a-z0-9]+", "-", str(raw or "").strip().lower()).strip("-")
@@ -1032,6 +1431,10 @@ class HubStore:
             seen.add(key)
             normalized.append(item[:160])
         return normalized
+
+    @classmethod
+    def _normalize_stack_items(cls, value: Any) -> list[str]:
+        return cls._normalize_text_list(value)
 
     @staticmethod
     def _guard_submission_text(*values: str) -> None:

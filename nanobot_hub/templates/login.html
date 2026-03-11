@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel auth-panel">
+    <p class="eyebrow">Hub Login</p>
+    <h2 style="margin-top: 0;">Sign in to manage the hub</h2>
+    <p class="muted">Read-only marketplace pages stay public. Admin login is only required for submissions, moderation, and other write operations.</p>
+    {% if error %}
+      <div class="panel" style="margin-bottom: 14px; background: var(--danger-soft); border-color: #fecaca;">
+        <strong>Login failed</strong>
+        <p class="muted" style="margin-bottom: 0;">{{ error }}</p>
+      </div>
+    {% endif %}
+    <form method="post" action="/login" class="form-grid" data-testid="hub-login-form">
+      <label>
+        Username or Email
+        <input type="text" name="identifier" value="{{ form_data.identifier if form_data else '' }}" required data-testid="hub-login-identifier">
+      </label>
+      <label>
+        Password
+        <input type="password" name="password" required data-testid="hub-login-password">
+      </label>
+      <div class="topbar-actions" style="justify-content: flex-start;">
+        <button type="submit" data-testid="hub-login-submit">Sign In</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

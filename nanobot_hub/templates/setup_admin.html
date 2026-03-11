@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel auth-panel">
+    <p class="eyebrow">Hub Bootstrap</p>
+    <h2 style="margin-top: 0;">Create the first hub admin</h2>
+    <p class="muted">This is a one-time step. After the first admin exists, all hub write paths move to the regular login flow.</p>
+    {% if error %}
+      <div class="panel" style="margin-bottom: 14px; background: var(--danger-soft); border-color: #fecaca;">
+        <strong>Setup failed</strong>
+        <p class="muted" style="margin-bottom: 0;">{{ error }}</p>
+      </div>
+    {% endif %}
+    <form method="post" action="/setup/admin" class="form-grid" data-testid="hub-admin-setup-form">
+      <label>
+        Username
+        <input type="text" name="username" value="{{ form_data.username if form_data else '' }}" required data-testid="hub-admin-setup-username">
+      </label>
+      <label>
+        Email
+        <input type="email" name="email" value="{{ form_data.email if form_data else '' }}" required data-testid="hub-admin-setup-email">
+      </label>
+      <label>
+        Password
+        <input type="password" name="password" required data-testid="hub-admin-setup-password">
+      </label>
+      <label>
+        Confirm Password
+        <input type="password" name="password_confirm" required data-testid="hub-admin-setup-password-confirm">
+      </label>
+      <div class="topbar-actions" style="justify-content: flex-start;">
+        <button type="submit" data-testid="hub-admin-setup-submit">Create Admin</button>
+      </div>
+    </form>
+  </section>
+{% endblock %}

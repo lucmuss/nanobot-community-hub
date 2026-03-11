@@ -38,38 +38,18 @@
       </div>
     </section>
     <section class="panel" id="submit-mcp">
-      <p class="eyebrow">Submit MCP</p>
-      <h3 style="margin:0 0 8px;">Add a repository to the hub</h3>
-      <p class="muted" style="margin:0 0 14px;">Users can submit GitHub-based MCP repositories directly. The hub rejects obvious secret-like strings and deduplicates known repository URLs.</p>
-      {% if submission_error %}
-        <div class="panel" style="margin-bottom: 14px; background: var(--danger-soft); border-color: #fecaca;">
-          <strong>Submission failed</strong>
-          <p class="muted" style="margin-bottom: 0;">{{ submission_error }}</p>
-        </div>
-      {% endif %}
-      {% if submission_result %}
-        <div class="panel" style="margin-bottom: 14px; background: var(--success-soft); border-color: #bbf7d0;">
-          <strong>{% if submission_result.created %}Published to the hub{% else %}Already tracked by the hub{% endif %}</strong>
-          <p class="muted" style="margin-bottom: 0;">
-            {{ submission_result.item.name }} ·
-            <a href="/mcp/{{ submission_result.item.slug }}">Open detail</a>
-          </p>
-        </div>
-      {% endif %}
-      <form method="post" action="/discover/submit-mcp" class="search-form" data-testid="hub-submit-form">
-        <input type="url" name="repo_url" value="{{ submission_form.repo_url }}" placeholder="https://github.com/owner/repo" required data-testid="hub-submit-repo-url">
-        <input type="text" name="name" value="{{ submission_form.name }}" placeholder="Optional display name" data-testid="hub-submit-name">
-        <textarea name="description" rows="3" placeholder="Optional short description" data-testid="hub-submit-description">{{ submission_form.description }}</textarea>
-        <div class="search-row" style="grid-template-columns: minmax(0, 1fr) 180px 180px;">
-          <input type="text" name="category" value="{{ submission_form.category }}" placeholder="Coding, Research, Automation" data-testid="hub-submit-category">
-          <input type="text" name="install_method" value="{{ submission_form.install_method }}" placeholder="npm, python, remote" data-testid="hub-submit-install-method">
-          <input type="text" name="submitted_by" value="{{ submission_form.submitted_by }}" placeholder="Optional display name" data-testid="hub-submit-submitted-by">
-        </div>
-        <input type="text" name="tags" value="{{ submission_form.tags }}" placeholder="Tags, comma-separated" data-testid="hub-submit-tags">
-        <div class="topbar-actions" style="justify-content: flex-start;">
-          <button type="submit" data-testid="hub-submit-button">Publish MCP</button>
-        </div>
-      </form>
+      <p class="eyebrow">Hub Writes</p>
+      <h3 style="margin:0 0 8px;">Controlled submissions and moderation</h3>
+      <p class="muted" style="margin:0 0 14px;">Write paths are now protected behind a Hub admin login or an explicit admin API token for trusted service-to-service automation.</p>
+      <div class="topbar-actions" style="justify-content: flex-start;">
+        {% if hub_admin %}
+          <a class="button" href="/admin">Open Hub Admin</a>
+        {% elif has_hub_admin %}
+          <a class="button" href="/login">Admin Login</a>
+        {% else %}
+          <a class="button" href="/setup/admin">Create First Admin</a>
+        {% endif %}
+      </div>
     </section>
   </div>
 
@@ -91,7 +71,7 @@
       <div class="stat-line">
         <div>
           <strong>GitHub repositories only</strong>
-          <div class="muted">The first submission flow is intentionally limited to GitHub URLs.</div>
+          <div class="muted">The first admin submission flow is intentionally limited to GitHub URLs.</div>
         </div>
       </div>
       <div class="stat-line">

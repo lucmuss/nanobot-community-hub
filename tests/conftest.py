@@ -16,5 +16,7 @@ def client(tmp_path: Path) -> TestClient:
     os.environ["NANOBOT_HUB_DB_PATH"] = str(db_path)
     os.environ["NANOBOT_HUB_PUBLIC_URL"] = "https://nanobot-community-hub.kolibri-kollektiv.eu"
     os.environ["NANOBOT_HUB_INSTANCE_NAME"] = "nanobot-community-hub"
+    os.environ["NANOBOT_HUB_SESSION_SECRET"] = "hub-test-session-secret"
+    os.environ["NANOBOT_HUB_API_TOKEN"] = "hub-test-api-token"
     app = create_app()
     return TestClient(app)

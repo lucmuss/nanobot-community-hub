@@ -8,49 +8,74 @@
     <link rel="stylesheet" href="/static/styles.css">
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar">
-        <div class="brand">
-          <p class="eyebrow">Nanobot Hub</p>
-          <strong>{{ instance_name }}</strong>
-          <p class="muted">Community-powered MCP intelligence</p>
-        </div>
-        <nav class="nav">
-          <a href="/discover" class="{% if nav_active == 'discover' %}active{% endif %}" data-testid="hub-nav-discover">Discover MCP</a>
-          <a href="/stacks" class="{% if nav_active == 'stacks' %}active{% endif %}" data-testid="hub-nav-stacks">MCP Stacks</a>
-          <a href="/showcase" class="{% if nav_active == 'showcase' %}active{% endif %}" data-testid="hub-nav-showcase">Showcase</a>
-          <a href="/community-stats" class="{% if nav_active == 'stats' %}active{% endif %}" data-testid="hub-nav-stats">Community Stats</a>
-        </nav>
-        <div class="sidebar-meta">
-          <div class="sidebar-meta-row">
-            <span>Version</span>
-            <strong>{{ current_version }}</strong>
-          </div>
-          {% if public_url %}
-            <div class="sidebar-meta-row">
-              <span>Public URL</span>
-              <strong>{{ public_url }}</strong>
-            </div>
-          {% endif %}
-        </div>
-      </aside>
-      <main class="content">
+    {% if flash.message %}
+      <div class="flash flash-{{ flash.level }}">{{ flash.message }}</div>
+    {% endif %}
+    {% if hide_shell %}
+      <main class="content auth-shell">
         <div class="content-inner">
-          <div class="topbar">
-            <div>
-              <p class="eyebrow">Nanobot Ecosystem</p>
-              <h1>{{ title }}</h1>
-            </div>
-            <div class="topbar-actions">
-              <a class="button secondary" href="/discover">Marketplace</a>
-              <a class="button secondary" href="/community-stats">Community Stats</a>
-              <a class="button secondary" href="/discover#submit-mcp">Submit MCP</a>
-              <a class="button" href="/stacks">Explore Stacks</a>
-            </div>
+    {% else %}
+      <div class="app-shell">
+        <aside class="sidebar">
+          <div class="brand">
+            <p class="eyebrow">Nanobot Hub</p>
+            <strong>{{ instance_name }}</strong>
+            <p class="muted">Community-powered MCP intelligence</p>
           </div>
-          {% block body %}{% endblock %}
+          <nav class="nav">
+            <a href="/discover" class="{% if nav_active == 'discover' %}active{% endif %}" data-testid="hub-nav-discover">Discover MCP</a>
+            <a href="/stacks" class="{% if nav_active == 'stacks' %}active{% endif %}" data-testid="hub-nav-stacks">MCP Stacks</a>
+            <a href="/showcase" class="{% if nav_active == 'showcase' %}active{% endif %}" data-testid="hub-nav-showcase">Showcase</a>
+            <a href="/community-stats" class="{% if nav_active == 'stats' %}active{% endif %}" data-testid="hub-nav-stats">Community Stats</a>
+            {% if hub_admin %}
+              <a href="/admin" class="{% if nav_active == 'admin' %}active{% endif %}" data-testid="hub-nav-admin">Admin</a>
+            {% endif %}
+          </nav>
+          <div class="sidebar-meta">
+            <div class="sidebar-meta-row">
+              <span>Version</span>
+              <strong>{{ current_version }}</strong>
+            </div>
+            {% if public_url %}
+              <div class="sidebar-meta-row">
+                <span>Public URL</span>
+                <strong>{{ public_url }}</strong>
+              </div>
+            {% endif %}
+          </div>
+        </aside>
+        <main class="content">
+          <div class="content-inner">
+            <div class="topbar">
+              <div>
+                <p class="eyebrow">Nanobot Ecosystem</p>
+                <h1>{{ title }}</h1>
+              </div>
+              <div class="topbar-actions">
+                <a class="button secondary" href="/discover">Marketplace</a>
+                <a class="button secondary" href="/community-stats">Community Stats</a>
+                {% if hub_admin %}
+                  <a class="button secondary" href="/admin">Hub Admin</a>
+                  <form method="post" action="/logout">
+                    <button class="secondary" type="submit" data-testid="hub-logout">Logout</button>
+                  </form>
+                {% elif has_hub_admin %}
+                  <a class="button secondary" href="/login">Admin Login</a>
+                {% else %}
+                  <a class="button secondary" href="/setup/admin">Create Admin</a>
+                {% endif %}
+                <a class="button" href="/stacks">Explore Stacks</a>
+              </div>
+            </div>
+    {% endif %}
+    {% block body %}{% endblock %}
+    {% if hide_shell %}
         </div>
       </main>
-    </div>
+    {% else %}
+          </div>
+        </main>
+      </div>
+    {% endif %}
   </body>
 </html>

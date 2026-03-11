@@ -9,6 +9,7 @@ def test_health_endpoint(client: TestClient) -> None:
     assert response.json()["ok"] is True
     assert response.json()["database_backend"] == "sqlite"
     assert response.json()["public_url"] == "https://nanobot-community-hub.kolibri-kollektiv.eu"
+    assert response.json()["admin_write_api"] is True
 
 
 def test_marketplace_seeded(client: TestClient) -> None:
@@ -45,3 +46,18 @@ def test_telemetry_ingest(client: TestClient) -> None:
     )
     assert response.status_code == 202
     assert response.json()["ok"] is True
+
+
+def test_api_write_endpoints_require_admin_or_token(client: TestClient) -> None:
+    denied = client.post(
+        "/api/v1/submissions/mcp",
+        json={"repo_url": "https://github.com/example/private-mcp"},
+    )
+    assert denied.status_code == 403
+
+    allowed = client.post(
+        "/api/v1/submissions/mcp",
+        headers={"Authorization": "Bearer hub-test-api-token"},
+        json={"repo_url": "https://github.com/example/private-mcp"},
+    )
+    assert allowed.status_code in {200, 201}

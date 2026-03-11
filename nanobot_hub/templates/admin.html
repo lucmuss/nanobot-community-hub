@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="panel hero-panel" style="margin-bottom: 24px;">
+    <p class="eyebrow">Admin</p>
+    <h2 style="margin: 0 0 8px;">Controlled write flows and simple moderation</h2>
+    <p class="muted" style="margin: 0;">Use this page to submit MCPs, curate stacks, publish showcase entries, and review lightweight moderation queues.</p>
+  </section>
+
+  <div class="panel-grid two" style="margin-bottom: 24px;">
+    <section class="panel">
+      <p class="eyebrow">Submit MCP</p>
+      <form method="post" action="/discover/submit-mcp" class="form-grid" data-testid="hub-admin-submit-mcp-form">
+        <input type="url" name="repo_url" value="{{ mcp_form.repo_url }}" placeholder="https://github.com/owner/repo" required data-testid="hub-admin-submit-mcp-repo">
+        <input type="text" name="name" value="{{ mcp_form.name }}" placeholder="Optional display name" data-testid="hub-admin-submit-mcp-name">
+        <textarea name="description" rows="3" placeholder="Optional short description" data-testid="hub-admin-submit-mcp-description">{{ mcp_form.description }}</textarea>
+        <div class="search-row" style="grid-template-columns: minmax(0, 1fr) 180px;">
+          <input type="text" name="category" value="{{ mcp_form.category }}" placeholder="Coding, Research, Automation" data-testid="hub-admin-submit-mcp-category">
+          <input type="text" name="install_method" value="{{ mcp_form.install_method }}" placeholder="npm, python, remote" data-testid="hub-admin-submit-mcp-install-method">
+        </div>
+        <input type="text" name="tags" value="{{ mcp_form.tags }}" placeholder="Tags, comma-separated" data-testid="hub-admin-submit-mcp-tags">
+        <div class="topbar-actions" style="justify-content: flex-start;">
+          <button type="submit" data-testid="hub-admin-submit-mcp-submit">Publish MCP</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">Submit Stack</p>
+      <form method="post" action="/admin/submit/stack" class="form-grid" data-testid="hub-admin-submit-stack-form">
+        <input type="text" name="title" value="{{ stack_form.title }}" placeholder="GitHub Developer Stack" required data-testid="hub-admin-submit-stack-title">
+        <textarea name="description" rows="2" placeholder="Short description" required data-testid="hub-admin-submit-stack-description">{{ stack_form.description }}</textarea>
+        <textarea name="use_case" rows="2" placeholder="Primary use case" required data-testid="hub-admin-submit-stack-use-case">{{ stack_form.use_case }}</textarea>
+        <input type="text" name="recommended_model" value="{{ stack_form.recommended_model }}" placeholder="moonshot/kimi-k2.5" required data-testid="hub-admin-submit-stack-model">
+        <textarea name="example_prompt" rows="2" placeholder="Example prompt" data-testid="hub-admin-submit-stack-prompt">{{ stack_form.example_prompt }}</textarea>
+        <textarea name="items" rows="3" placeholder="MCP slugs or GitHub repository URLs, comma-separated" required data-testid="hub-admin-submit-stack-items">{{ stack_form.items }}</textarea>
+        <label><input type="checkbox" name="is_public" {% if stack_form.is_public %}checked{% endif %} data-testid="hub-admin-submit-stack-public"> Publish immediately</label>
+        <div class="topbar-actions" style="justify-content: flex-start;">
+          <button type="submit" data-testid="hub-admin-submit-stack-submit">Save Stack</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <section class="panel" style="margin-bottom: 24px;">
+    <p class="eyebrow">Submit Showcase</p>
+    <form method="post" action="/admin/submit/showcase" class="form-grid" data-testid="hub-admin-submit-showcase-form">
+      <div class="search-row" style="grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);">
+        <input type="text" name="title" value="{{ showcase_form.title }}" placeholder="AI Research Assistant" required data-testid="hub-admin-submit-showcase-title">
+        <input type="text" name="category" value="{{ showcase_form.category }}" placeholder="Research" required data-testid="hub-admin-submit-showcase-category">
+      </div>
+      <textarea name="description" rows="2" placeholder="Short description" required data-testid="hub-admin-submit-showcase-description">{{ showcase_form.description }}</textarea>
+      <textarea name="use_case" rows="2" placeholder="Why this setup matters" required data-testid="hub-admin-submit-showcase-use-case">{{ showcase_form.use_case }}</textarea>
+      <textarea name="example_prompt" rows="2" placeholder="Example prompt" required data-testid="hub-admin-submit-showcase-prompt">{{ showcase_form.example_prompt }}</textarea>
+      <select name="stack_slug" required data-testid="hub-admin-submit-showcase-stack">
+        <option value="">Select a stack</option>
+        {% for stack in all_stacks %}
+          <option value="{{ stack.slug }}" {% if showcase_form.stack_slug == stack.slug %}selected{% endif %}>{{ stack.title }}</option>
+        {% endfor %}
+      </select>
+      <label><input type="checkbox" name="is_public" {% if showcase_form.is_public %}checked{% endif %} data-testid="hub-admin-submit-showcase-public"> Publish immediately</label>
+      <div class="topbar-actions" style="justify-content: flex-start;">
+        <button type="submit" data-testid="hub-admin-submit-showcase-submit">Save Showcase</button>
+      </div>
+    </form>
+  </section>
+
+  <div class="moderation-grid">
+    <section class="panel">
+      <p class="eyebrow">MCP Moderation</p>
+      {% for item in mcp_queue %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.repo_url }} · {{ item.status }}</div>
+          </div>
+          <div class="topbar-actions">
+            <form method="post" action="/admin/moderate/mcp/{{ item.slug }}">
+              <input type="hidden" name="action" value="verify">
+              <button class="secondary" type="submit" data-testid="hub-admin-mcp-verify-{{ item.slug }}">Verify</button>
+            </form>
+            <form method="post" action="/admin/moderate/mcp/{{ item.slug }}">
+              <input type="hidden" name="action" value="reject">
+              <button class="secondary" type="submit" data-testid="hub-admin-mcp-reject-{{ item.slug }}">Reject</button>
+            </form>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">No MCP entries need moderation right now.</p>
+      {% endfor %}
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">Stack Moderation</p>
+      {% for item in stack_queue %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.title }}</strong>
+            <div class="muted">{{ item.status }} · public={{ item.is_public }}</div>
+          </div>
+          <div class="topbar-actions">
+            <form method="post" action="/admin/moderate/stack/{{ item.slug }}">
+              <input type="hidden" name="action" value="publish">
+              <button class="secondary" type="submit" data-testid="hub-admin-stack-publish-{{ item.slug }}">Publish</button>
+            </form>
+            <form method="post" action="/admin/moderate/stack/{{ item.slug }}">
+              <input type="hidden" name="action" value="hide">
+              <button class="secondary" type="submit" data-testid="hub-admin-stack-hide-{{ item.slug }}">Hide</button>
+            </form>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">No stacks need moderation right now.</p>
+      {% endfor %}
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">Showcase Moderation</p>
+      {% for item in showcase_queue %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.title }}</strong>
+            <div class="muted">{{ item.status }} · public={{ item.is_public }}</div>
+          </div>
+          <div class="topbar-actions">
+            <form method="post" action="/admin/moderate/showcase/{{ item.slug }}">
+              <input type="hidden" name="action" value="publish">
+              <button class="secondary" type="submit" data-testid="hub-admin-showcase-publish-{{ item.slug }}">Publish</button>
+            </form>
+            <form method="post" action="/admin/moderate/showcase/{{ item.slug }}">
+              <input type="hidden" name="action" value="hide">
+              <button class="secondary" type="submit" data-testid="hub-admin-showcase-hide-{{ item.slug }}">Hide</button>
+            </form>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">No showcase entries need moderation right now.</p>
+      {% endfor %}
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">Recent MCP Submission Audit</p>
+      {% for item in recent_submissions %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.submitted_by or "unknown" }} · {{ item.status }}</div>
+          </div>
+          <span class="mono">{{ item.published_slug or item.proposed_slug }}</span>
+        </div>
+      {% else %}
+        <p class="muted">No submission audit entries recorded yet.</p>
+      {% endfor %}
+    </section>
+  </div>
+{% endblock %}
