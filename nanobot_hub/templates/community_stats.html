@@ -13,20 +13,20 @@
     </div>
     <div class="page-meta-bar">
       <span class="meta-chip {{ overview.network_health.tone }}" title="{{ overview.network_health.summary }}"><strong>Network Health</strong>{{ overview.network_health.score }} · {{ overview.network_health.label }}</span>
-      <span class="meta-chip"><strong>Top category</strong>{{ overview.top_category or "Unknown" }}</span>
+      <span class="meta-chip"><strong>Top telemetry category</strong>{{ overview.top_category or "No live telemetry" }}</span>
       <span class="meta-chip"><strong>Unique MCPs</strong>{{ overview.registry_count }}</span>
       <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
     </div>
   </section>
 
   <section class="compact-kpi-grid" style="margin-top:24px;">
-    <article class="compact-kpi"><span class="muted">Registry</span><strong>{{ overview.registry_count }}</strong><small>Tracked MCP servers</small></article>
+    <article class="compact-kpi"><span class="muted">Registry</span><strong>{{ overview.registry_count }}</strong><small>Catalog MCP servers</small></article>
     <article class="compact-kpi"><span class="muted">Verified</span><strong>{{ overview.verified_count }}</strong><small>Verified entries</small></article>
-    <article class="compact-kpi"><span class="muted">Active Instances</span><strong>{{ overview.active_instances }}</strong><small>Community observed</small></article>
-    <article class="compact-kpi"><span class="muted">Runs Today</span><strong>{{ overview.runs_today }}</strong><small>Telemetry events</small></article>
+    <article class="compact-kpi"><span class="muted">Active Instances</span><strong>{{ overview.active_instances }}</strong><small>Observed in last 30 days</small></article>
+    <article class="compact-kpi"><span class="muted">Runs Today</span><strong>{{ overview.runs_today }}</strong><small>Live telemetry events</small></article>
     <article class="compact-kpi"><span class="muted">Network Health</span><strong>{{ overview.network_health.score }}</strong><small title="{{ overview.network_health.summary }}">{{ overview.network_health.label }} · {{ overview.network_health.summary }}</small></article>
-    <article class="compact-kpi"><span class="muted">Avg Success</span><strong>{{ (overview.average_success_rate * 100)|round(1) }}%</strong><small>network health</small></article>
-    <article class="compact-kpi"><span class="muted">Avg Latency</span><strong>{{ overview.average_latency_ms }} ms</strong><small>across tracked MCPs</small></article>
+    <article class="compact-kpi"><span class="muted">Avg Success</span><strong>{{ (overview.average_success_rate * 100)|round(1) }}%</strong><small>from live telemetry</small></article>
+    <article class="compact-kpi"><span class="muted">Avg Latency</span><strong>{{ overview.average_latency_ms }} ms</strong><small>from live telemetry</small></article>
   </section>
 
   <div class="panel-grid three" style="margin-top:24px;">
@@ -36,7 +36,7 @@
         <div class="stat-line">
           <div>
             <strong>{{ loop.index }}. {{ item.name }}</strong>
-            <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} active instances</div>
+            <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} observed instances</div>
           </div>
           <div style="display:flex; gap:8px;">
             <a class="button secondary" href="/mcp/{{ item.slug }}">Open</a>
@@ -80,7 +80,7 @@
         <div class="stat-line">
           <div>
             <strong>{{ item.name }}</strong>
-            <div class="muted">{{ item.installs }} installs · {{ item.active_instances }} active instances</div>
+            <div class="muted">{{ item.installs }} installs · {{ item.active_instances }} observed instances</div>
           </div>
         <div style="display:flex; gap:8px; align-items:center;">
           <span class="pill {{ item.trust_score.tone }}" title="Trust Score combines reliability, install evidence, latency, and verification status.">{{ item.trust_score.score }}/10</span>
@@ -116,7 +116,7 @@
       <div class="stat-line">
         <div>
           <strong>{{ item.name }}</strong>
-          <div class="muted">{{ item.active_instances }} active instances · {{ item.installs }} installs</div>
+          <div class="muted">{{ item.active_instances }} observed instances · {{ item.installs }} installs</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
           <span class="pill {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs.">{{ item.reliability.percent }}%</span>
@@ -134,11 +134,11 @@
       <div class="stat-line">
         <div>
           <strong>{{ item.name }}</strong>
-          <div class="muted">{{ item.count }} MCPs in this category</div>
+          <div class="muted">{{ item.count }} telemetry runs · {{ item.active_instances }} observed instances</div>
         </div>
       </div>
     {% else %}
-      <p class="muted">No category signals are available yet.</p>
+      <p class="muted">No live telemetry category signals are available yet.</p>
     {% endfor %}
   </section>
 {% endblock %}

@@ -79,8 +79,8 @@ def test_marketplace_recommendation_and_showcase_api(client: TestClient) -> None
     detail = client.get("/api/v1/marketplace/context7")
     assert detail.status_code == 200
     detail_payload = detail.json()
-    assert detail_payload["install_confidence"]["score"] >= 9.0
-    assert detail_payload["trust_score"]["score"] >= 8.0
+    assert detail_payload["install_confidence"]["score"] == 0.0
+    assert detail_payload["install_confidence"]["label"] == "No live telemetry"
     assert "runs_30d" in detail_payload["install_confidence"]
     assert "config_consensus" in detail_payload["trust_score"]
     assert "repair_rate" in detail_payload["trust_score"]
@@ -173,7 +173,8 @@ def test_telemetry_aggregation_updates_detail_and_overview(client: TestClient) -
     payload = detail.json()
     assert payload["recent_runs"] == 3
     assert payload["recent_errors"] == 1
-    assert payload["active_instances"] == 1820
+    assert payload["active_instances"] == 2
+    assert payload["catalog_active_instances"] == 1820
     assert payload["success_rate"] == 0.6667
     assert payload["avg_latency_ms"] == 2000.0
     assert payload["recent_telemetry"]["active_instances"] == 2
@@ -183,7 +184,8 @@ def test_telemetry_aggregation_updates_detail_and_overview(client: TestClient) -
     stats = overview.json()
     assert stats["runs_today"] == 3
     assert stats["telemetry_active"] is True
-    assert stats["top_mcps"][0]["slug"] == "context7"
+    assert stats["active_instances"] == 2
+    assert stats["top_category"] == "Coding"
     assert stats["average_success_rate"] > 0
     assert stats["average_latency_ms"] > 0
     assert stats["top_categories"]
@@ -191,6 +193,19 @@ def test_telemetry_aggregation_updates_detail_and_overview(client: TestClient) -
     assert stats["fastest_growing_mcps"]
     assert stats["most_installed_mcps"]
     assert stats["common_combinations"]
+
+
+def test_overview_uses_live_telemetry_not_seed_counts(client: TestClient) -> None:
+    response = client.get("/api/v1/stats/overview")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["registry_count"] >= 5
+    assert payload["active_instances"] == 0
+    assert payload["runs_today"] == 0
+    assert payload["top_category"] == ""
+    assert payload["catalog_top_category"] in {"Research", "Coding", "Automation"}
+    assert payload["telemetry_active"] is False
+    assert payload["network_health"]["label"] == "No live telemetry"
 
 
 def test_marketplace_fix_suggestions_endpoint_uses_recommendations_and_runtime_hints(client: TestClient) -> None:

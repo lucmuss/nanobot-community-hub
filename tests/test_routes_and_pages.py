@@ -126,11 +126,12 @@ def test_showcase_and_stats_pages_render_seeded_data(client: TestClient) -> None
     stats_response = client.get("/community-stats")
     assert stats_response.status_code == 200
     assert "Community Stats" in stats_response.text
-    assert "Tracked MCP servers" in stats_response.text
+    assert "Catalog MCP servers" in stats_response.text
     assert "Avg Success" in stats_response.text
     assert "Top Categories" in stats_response.text
     assert "Network Health" in stats_response.text
     assert "Common Combinations" in stats_response.text
+    assert "No live telemetry" in stats_response.text
 
 
 def test_hub_pages_show_local_gui_bridge_when_default_gui_url_is_configured(client: TestClient) -> None:

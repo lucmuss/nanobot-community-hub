@@ -20,7 +20,7 @@
     <div class="page-meta-bar">
       <span class="meta-chip"><strong>Registry</strong>{{ overview.registry_count }} entries</span>
       <span class="meta-chip"><strong>Verified</strong>{{ overview.verified_count }}</span>
-      <span class="meta-chip"><strong>Top category</strong>{{ overview.top_category or "Unknown" }}</span>
+      <span class="meta-chip"><strong>Top telemetry category</strong>{{ overview.top_category or "No live telemetry" }}</span>
       <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
     </div>
   </section>
@@ -71,22 +71,22 @@
     <article class="compact-kpi">
       <span class="muted">Registry</span>
       <strong>{{ overview.registry_count }}</strong>
-      <small>tracked MCP servers</small>
+      <small>catalog MCP servers</small>
     </article>
     <article class="compact-kpi">
       <span class="muted">Active Instances</span>
       <strong>{{ overview.active_instances }}</strong>
-      <small>community observed</small>
+      <small>observed in last 30 days</small>
     </article>
     <article class="compact-kpi">
       <span class="muted">Runs Today</span>
       <strong>{{ overview.runs_today }}</strong>
-      <small>telemetry events</small>
+      <small>live telemetry events</small>
     </article>
     <article class="compact-kpi">
-      <span class="muted">Top Category</span>
-      <strong>{{ overview.top_category or "Unknown" }}</strong>
-      <small>{{ overview.unique_categories }} categories</small>
+      <span class="muted">Top Telemetry Category</span>
+      <strong>{{ overview.top_category or "No live telemetry" }}</strong>
+      <small>{{ overview.unique_categories }} active categories</small>
     </article>
   </section>
 

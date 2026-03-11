@@ -33,7 +33,7 @@
         </div>
       </div>
       <div class="meta-grid" style="margin-top:14px;">
-        <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
+        <div class="meta-pair"><strong>Observed Instances (30d)</strong><span>{{ item.active_instances }}</span></div>
         <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
         <div class="meta-pair"><strong>Recent Telemetry Runs</strong><span>{{ item.recent_runs }}</span></div>
         <div class="meta-pair"><strong>Works well with</strong><span>{{ item.best_for|join(", ") if item.best_for else "General workflows" }}</span></div>

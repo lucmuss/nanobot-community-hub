@@ -1194,6 +1194,7 @@ class HubStore:
             return dict(cached)
         telemetry = self._telemetry_stats_by_slug()
         marketplace = self.list_mcps()
+        telemetry_window_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
         with self.engine.connect() as conn:
             total_events_today = conn.execute(
@@ -1201,19 +1202,44 @@ class HubStore:
                     telemetry_events.c.created_at >= today_start.isoformat(timespec="seconds")
                 )
             ).scalar_one()
+            total_active_instances = conn.execute(
+                select(func.count(func.distinct(telemetry_events.c.instance_hash))).where(
+                    telemetry_events.c.created_at >= telemetry_window_start
+                )
+            ).scalar_one()
+            telemetry_category_rows = conn.execute(
+                select(
+                    mcp_servers.c.category.label("category"),
+                    func.count().label("run_count"),
+                    func.count(func.distinct(telemetry_events.c.instance_hash)).label("active_instances"),
+                )
+                .select_from(
+                    telemetry_events.join(mcp_servers, telemetry_events.c.mcp_slug == mcp_servers.c.slug)
+                )
+                .where(telemetry_events.c.created_at >= telemetry_window_start)
+                .group_by(mcp_servers.c.category)
+            ).mappings().all()
             common_combinations = self._build_overview_combinations(conn)
         featured_min_trust = float(runtime_settings.get("featured_min_trust_score", 7.5) or 0.0)
         featured_marketplace = [
             item for item in marketplace if float(item.get("trust_score", {}).get("score", 0.0) or 0.0) >= featured_min_trust
         ] or list(marketplace)
-        active_instances = sum(int(item["active_instances"]) for item in marketplace)
         category_counts: dict[str, int] = {}
         for item in marketplace:
             category = str(item.get("category", "")).strip() or "Other"
             category_counts[category] = category_counts.get(category, 0) + 1
-        top_category = ""
-        if category_counts:
-            top_category = max(category_counts.items(), key=lambda entry: (entry[1], entry[0]))[0]
+        telemetry_top_category = ""
+        if telemetry_category_rows:
+            telemetry_top_category = str(
+                max(
+                    telemetry_category_rows,
+                    key=lambda row: (
+                        int(row["run_count"] or 0),
+                        int(row["active_instances"] or 0),
+                        str(row["category"] or ""),
+                    ),
+                )["category"]
+            )
         trending_mcps = sorted(
             featured_marketplace,
             key=lambda item: (
@@ -1238,17 +1264,29 @@ class HubStore:
             ),
             reverse=True,
         )[:3]
-        average_success_rate = round(
-            (sum(float(item.get("success_rate", 0.0) or 0.0) for item in marketplace) / len(marketplace)) if marketplace else 0.0,
-            4,
+        total_runs_30d = sum(int(item.get("run_count", 0) or 0) for item in telemetry.values())
+        total_successes_30d = sum(int(item.get("success_count", 0) or 0) for item in telemetry.values())
+        weighted_latency_sum = sum(
+            float(item.get("avg_latency_ms", 0.0) or 0.0) * int(item.get("run_count", 0) or 0)
+            for item in telemetry.values()
+            if int(item.get("run_count", 0) or 0) > 0
         )
-        average_latency_ms = round(
-            (sum(float(item.get("avg_latency_ms", 0.0) or 0.0) for item in marketplace) / len(marketplace)) if marketplace else 0.0,
-            1,
-        )
+        average_success_rate = round((total_successes_30d / total_runs_30d) if total_runs_30d else 0.0, 4)
+        average_latency_ms = round((weighted_latency_sum / total_runs_30d) if total_runs_30d else 0.0, 1)
         top_categories = [
-            {"name": name, "count": count}
-            for name, count in sorted(category_counts.items(), key=lambda entry: (-entry[1], entry[0]))[:4]
+            {
+                "name": str(row["category"] or "Other"),
+                "count": int(row["run_count"] or 0),
+                "active_instances": int(row["active_instances"] or 0),
+            }
+            for row in sorted(
+                telemetry_category_rows,
+                key=lambda entry: (
+                    -int(entry["run_count"] or 0),
+                    -int(entry["active_instances"] or 0),
+                    str(entry["category"] or ""),
+                ),
+            )[:4]
         ]
         fastest_growing_mcps = sorted(
             marketplace,
@@ -1271,10 +1309,11 @@ class HubStore:
         overview = {
             "registry_count": len(marketplace),
             "verified_count": sum(1 for item in marketplace if item["verified"]),
-            "active_instances": active_instances,
+            "active_instances": int(total_active_instances or 0),
             "runs_today": int(total_events_today or 0),
-            "top_category": top_category,
-            "unique_categories": len(category_counts),
+            "top_category": telemetry_top_category,
+            "catalog_top_category": max(category_counts.items(), key=lambda entry: (entry[1], entry[0]))[0] if category_counts else "",
+            "unique_categories": len(telemetry_category_rows),
             "top_mcps": sorted(
                 featured_marketplace,
                 key=lambda item: (
@@ -1295,9 +1334,10 @@ class HubStore:
                 average_success_rate=average_success_rate,
                 average_latency_ms=average_latency_ms,
                 runs_today=int(total_events_today or 0),
+                telemetry_active=bool(total_runs_30d),
             ),
             "common_combinations": common_combinations,
-            "telemetry_active": bool(telemetry),
+            "telemetry_active": bool(total_runs_30d),
         }
         return self._cache_set(
             "overview:default",
@@ -1829,7 +1869,8 @@ class HubStore:
                 select(mcp_recommended_configs).where(mcp_recommended_configs.c.mcp_slug == slug)
             ).mappings().first()
             recommendation = dict(recommendation) if recommendation else None
-        effective_active = max(int(row["active_instances"]), int(telemetry.get("active_instances", 0) or 0))
+        catalog_active_instances = max(0, int(row["active_instances"] or 0))
+        telemetry_active_instances = max(0, int(telemetry.get("active_instances", 0) or 0))
         effective_success = (
             float(telemetry.get("success_rate"))
             if telemetry.get("run_count", 0) >= int((runtime_settings or {}).get("featured_min_signal_count", 3) or 3)
@@ -1856,7 +1897,7 @@ class HubStore:
             success_rate=effective_success,
             verified=bool(row["verified"]),
             recommendation=dict(recommendation) if recommendation else None,
-            active_instances=effective_active,
+            active_instances=telemetry_active_instances,
             installs=int(row["installs"]),
             signal_count=int(telemetry.get("run_count", 0) or 0),
             telemetry=telemetry,
@@ -1874,7 +1915,9 @@ class HubStore:
             "tags": json.loads(str(row["tags_json"])),
             "tools": tools,
             "tool_count": len(tools),
-            "active_instances": effective_active,
+            "catalog_active_instances": catalog_active_instances,
+            "telemetry_active_instances": telemetry_active_instances,
+            "active_instances": telemetry_active_instances,
             "success_rate": round(effective_success, 4),
             "avg_latency_ms": round(effective_latency, 1),
             "recent_runs": int(telemetry.get("run_count", 0) or 0),
@@ -2779,10 +2822,21 @@ class HubStore:
     ) -> dict[str, Any]:
         telemetry_runs = max(0, int(telemetry.get("run_count", signal_count) or 0))
         telemetry_instances = max(0, int(telemetry.get("active_instances", active_instances) or 0))
+        if telemetry_runs == 0 and telemetry_instances == 0:
+            return {
+                "score": 0.0,
+                "label": "No live telemetry",
+                "tone": "muted",
+                "based_on_instances": 0,
+                "runs_30d": 0,
+                "instances_30d": 0,
+                "volume_score": 0.0,
+                "diversity_score": 0.0,
+                "diversity_cap": 0.0,
+            }
         target_runs = 1000
         target_instances = 50
-        evidence_runs = max(telemetry_runs, min(max(0, int(installs or 0)), target_runs))
-        volume = min(1.0, math.log10(evidence_runs + 1) / math.log10(target_runs + 1))
+        volume = min(1.0, math.log10(telemetry_runs + 1) / math.log10(target_runs + 1))
         diversity = min(1.0, telemetry_instances / target_instances) if target_instances else 0.0
         base = 0.7 * volume + 0.3 * diversity
         diversity_cap = 0.35 + (0.65 * diversity)
@@ -2796,16 +2850,11 @@ class HubStore:
         else:
             label = "Needs review"
             tone = "bad"
-        evidence = max(
-            telemetry_instances,
-            int(recommendation.get("based_on_instances", 0) if isinstance(recommendation, dict) else 0),
-            max(int(active_instances or 0), 0),
-        )
         return {
             "score": score,
             "label": label,
             "tone": tone,
-            "based_on_instances": evidence,
+            "based_on_instances": telemetry_instances,
             "runs_30d": telemetry_runs,
             "instances_30d": telemetry_instances,
             "volume_score": round(volume, 4),
@@ -2894,7 +2943,20 @@ class HubStore:
         return (observed_successes + prior_mean * prior_weight) / (signals + prior_weight) if (signals + prior_weight) else prior_mean
 
     @staticmethod
-    def _build_network_health_payload(*, average_success_rate: float, average_latency_ms: float, runs_today: int) -> dict[str, Any]:
+    def _build_network_health_payload(
+        *,
+        average_success_rate: float,
+        average_latency_ms: float,
+        runs_today: int,
+        telemetry_active: bool,
+    ) -> dict[str, Any]:
+        if not telemetry_active:
+            return {
+                "score": 0.0,
+                "label": "No live telemetry",
+                "tone": "muted",
+                "summary": "No live telemetry has been observed yet.",
+            }
         score = float(average_success_rate or 0.0) * 100.0
         latency = float(average_latency_ms or 0.0)
         if latency > 3000:
