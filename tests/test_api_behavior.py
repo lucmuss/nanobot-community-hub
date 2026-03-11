@@ -22,7 +22,14 @@ def test_marketplace_filters_and_sorting(client: TestClient) -> None:
     assert items
     assert all(item["category"] == "Research" for item in items)
     assert all(item["language"] == "Remote" for item in items)
-    assert all(item["reliability"]["percent"] >= 90 for item in items)
+    assert all(
+        (
+            item["reliability"]["percent"] >= 90
+            if item.get("has_live_telemetry")
+            else item.get("catalog_reliability_percent", 0) >= 90
+        )
+        for item in items
+    )
     assert items[0]["slug"] == "context7"
     assert any("Makes outbound network requests" in item.get("permission_hints", []) for item in items)
     assert "Remote" in payload["languages"]

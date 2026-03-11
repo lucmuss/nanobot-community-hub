@@ -9,8 +9,8 @@
       </div>
     </div>
     <div class="page-meta-bar">
-      <span class="meta-chip {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully."><strong>Reliability</strong>{{ item.reliability.label }} · {{ item.reliability.percent }}%</span>
-      <span class="meta-chip {{ item.trust_score.tone }}" title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals."><strong>Trust Score</strong>{{ item.trust_score.score }}/10</span>
+      <span class="meta-chip {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully."><strong>Reliability</strong>{% if item.has_live_telemetry %}{{ item.reliability.label }} · {{ item.reliability.percent }}%{% else %}{{ item.reliability.label }}{% endif %}</span>
+      <span class="meta-chip {{ item.trust_score.tone }}" title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals."><strong>Trust Score</strong>{% if item.has_live_telemetry %}{{ item.trust_score.score }}/10{% else %}Needs telemetry{% endif %}</span>
       <span class="meta-chip {{ item.install_confidence.tone }}" title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances."><strong>Confidence</strong>{{ item.install_confidence.score }}/10</span>
       <span class="meta-chip {{ item.runtime_engine.tone }}"><strong>Runtime</strong>{{ item.runtime_engine.label }}</span>
       <span class="meta-chip {{ item.mcp_type.tone }}"><strong>Type</strong>{{ item.mcp_type.label }}</span>
@@ -34,11 +34,17 @@
       </div>
       <div class="meta-grid" style="margin-top:14px;">
         <div class="meta-pair"><strong>Observed Instances (30d)</strong><span>{{ item.active_instances }}</span></div>
-        <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+        <div class="meta-pair"><strong>Average Latency</strong><span>{% if item.avg_latency_ms is not none %}{{ item.avg_latency_ms }} ms{% else %}No live telemetry{% endif %}</span></div>
         <div class="meta-pair"><strong>Recent Telemetry Runs</strong><span>{{ item.recent_runs }}</span></div>
         <div class="meta-pair"><strong>Works well with</strong><span>{{ item.best_for|join(", ") if item.best_for else "General workflows" }}</span></div>
         <div class="meta-pair"><strong>Runs in 24h</strong><span>{{ item.usage_trend.runs_24h }}</span></div>
         <div class="meta-pair"><strong>Runs in 7d</strong><span>{{ item.usage_trend.runs_7d }}</span></div>
+      </div>
+      <div class="meta-grid" style="margin-top:14px;">
+        <div class="meta-pair"><strong>Catalog baseline</strong><span>{{ item.catalog_active_instances }} seeded instances</span></div>
+        <div class="meta-pair"><strong>Observed installs</strong><span>{{ item.installs }}</span></div>
+        <div class="meta-pair"><strong>Catalog installs</strong><span>{{ item.catalog_installs }}</span></div>
+        <div class="meta-pair"><strong>Catalog latency</strong><span>{{ item.catalog_avg_latency_ms }} ms</span></div>
       </div>
     </section>
     <section class="panel">
@@ -154,9 +160,9 @@
     <section class="panel">
       <p class="eyebrow">Trust Breakdown</p>
       <div class="meta-grid">
-        <div class="meta-pair"><strong>Trust Score</strong><span>{{ item.trust_score.score }}/10 · {{ item.trust_score.label }}</span></div>
-        <div class="meta-pair"><strong>Confidence</strong><span>{{ item.install_confidence.score }}/10</span></div>
-        <div class="meta-pair"><strong>Reliability</strong><span>{{ item.reliability.percent }}%</span></div>
+            <div class="meta-pair"><strong>Trust Score</strong><span>{% if item.has_live_telemetry %}{{ item.trust_score.score }}/10 · {{ item.trust_score.label }}{% else %}Needs telemetry{% endif %}</span></div>
+            <div class="meta-pair"><strong>Confidence</strong><span>{{ item.install_confidence.score }}/10</span></div>
+        <div class="meta-pair"><strong>Reliability</strong><span>{% if item.has_live_telemetry %}{{ item.reliability.percent }}%{% else %}No live telemetry{% endif %}</span></div>
         <div class="meta-pair"><strong>Signals</strong><span>{{ item.install_confidence.based_on_instances }}</span></div>
         <div class="meta-pair"><strong>30d runs</strong><span>{{ item.install_confidence.runs_30d }}</span></div>
         <div class="meta-pair"><strong>30d instances</strong><span>{{ item.install_confidence.instances_30d }}</span></div>

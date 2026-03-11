@@ -450,6 +450,16 @@ SEED_SHOWCASE: list[dict[str, Any]] = [
     },
 ]
 
+SEED_MCP_INSTALL_BASELINES: dict[str, int] = {
+    str(entry["slug"]): int(entry.get("installs", 0) or 0) for entry in SEED_MCPS
+}
+SEED_STACK_IMPORT_BASELINES: dict[str, int] = {
+    str(entry["slug"]): int(entry.get("imports_count", 0) or 0) for entry in SEED_STACKS
+}
+SEED_SHOWCASE_IMPORT_BASELINES: dict[str, int] = {
+    str(entry["slug"]): int(entry.get("imports_count", 0) or 0) for entry in SEED_SHOWCASE
+}
+
 _GITHUB_REPO_RE = re.compile(r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)$", re.IGNORECASE)
 _SECRET_RE = re.compile(
     r"(sk-[A-Za-z0-9_\-]{12,}|ghp_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]+|fc-[A-Za-z0-9]{12,}|AIza[0-9A-Za-z\-_]{20,}|Bearer\s+[A-Za-z0-9._\-]+)",
@@ -775,7 +785,15 @@ class HubStore:
                 items = [
                     item
                     for item in items
-                    if int(item.get("reliability", {}).get("percent", 0) or 0) >= minimum_percent
+                    if int(
+                        (
+                            item.get("reliability", {}).get("percent", 0)
+                            if item.get("has_live_telemetry")
+                            else item.get("catalog_reliability_percent", 0)
+                        )
+                        or 0
+                    )
+                    >= minimum_percent
                 ]
 
         sort_key = str(sort or "trending").lower()
@@ -796,7 +814,14 @@ class HubStore:
                     ),
                     float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
                     float(item.get("install_confidence", {}).get("score", 0.0) or 0.0),
-                    int(item.get("reliability", {}).get("percent", 0) or 0),
+                    int(
+                        (
+                            item.get("reliability", {}).get("percent", 0)
+                            if item.get("has_live_telemetry")
+                            else item.get("catalog_reliability_percent", 0)
+                        )
+                        or 0
+                    ),
                     int(item.get("active_instances", 0) or 0),
                 ),
                 reverse=True,
@@ -1055,9 +1080,17 @@ class HubStore:
                 )
             if conditions:
                 stmt = stmt.where(and_(*conditions))
-            stmt = stmt.order_by(mcp_stacks.c.rating.desc(), mcp_stacks.c.imports_count.desc())
             rows = conn.execute(stmt).mappings().all()
-            return [self._build_stack_summary(conn, row) for row in rows]
+            items = [self._build_stack_summary(conn, row) for row in rows]
+            items.sort(
+                key=lambda item: (
+                    float(item.get("rating", 0.0) or 0.0),
+                    int(item.get("imports_count", 0) or 0),
+                    str(item.get("title", "")),
+                ),
+                reverse=True,
+            )
+            return items
 
     def get_stack(self, slug: str, *, include_private: bool = False) -> dict[str, Any] | None:
         with self.engine.connect() as conn:
@@ -1093,7 +1126,6 @@ class HubStore:
                 conditions.append(showcase_entries.c.category == category)
             if conditions:
                 stmt = stmt.where(and_(*conditions))
-            stmt = stmt.order_by(showcase_entries.c.imports_count.desc(), showcase_entries.c.upvotes_count.desc())
             rows = conn.execute(stmt).mappings().all()
             items: list[dict[str, Any]] = []
             for row in rows:
@@ -1120,12 +1152,26 @@ class HubStore:
                 items.append(
                     {
                         **dict(row),
+                        "catalog_imports_count": max(0, int(row["imports_count"] or 0)),
+                        "imports_count": max(
+                            0,
+                            int(row["imports_count"] or 0)
+                            - int(SEED_SHOWCASE_IMPORT_BASELINES.get(str(row["slug"]), 0) or 0),
+                        ),
                         "stack": dict(stack_row) if stack_row else None,
                         "stack_items": [dict(item) for item in stack_items],
                         "best_for": self._build_stack_best_for_payload(stack_categories),
                         "demo_ready": bool(stack_row and stack_items and str(row.get("example_prompt", "")).strip()),
                     }
                 )
+            items.sort(
+                key=lambda item: (
+                    int(item.get("imports_count", 0) or 0),
+                    int(item.get("upvotes_count", 0) or 0),
+                    str(item.get("title", "")),
+                ),
+                reverse=True,
+            )
             return items
 
     def list_recent_mcp_submissions(self, limit: int = 20) -> list[dict[str, Any]]:
@@ -1665,6 +1711,12 @@ class HubStore:
             ]
             return {
                 **dict(row),
+                "catalog_imports_count": max(0, int(row["imports_count"] or 0)),
+                "imports_count": max(
+                    0,
+                    int(row["imports_count"] or 0)
+                    - int(SEED_SHOWCASE_IMPORT_BASELINES.get(str(row["slug"]), 0) or 0),
+                ),
                 "stack": dict(stack_row) if stack_row else None,
                 "stack_items": [dict(item) for item in stack_items],
                 "best_for": self._build_stack_best_for_payload(stack_categories),
@@ -1804,16 +1856,25 @@ class HubStore:
 
     def increment_mcp_install(self, slug: str) -> dict[str, int]:
         result = self._increment_counter(mcp_servers, slug, "installs")
+        raw_count = int(result.get("installs", 0) or 0)
+        result["catalog_installs"] = raw_count
+        result["installs"] = max(0, raw_count - int(SEED_MCP_INSTALL_BASELINES.get(slug, 0) or 0))
         self._invalidate_cache("marketplace:", "overview:")
         return result
 
     def increment_stack_import(self, slug: str) -> dict[str, int]:
         result = self._increment_counter(mcp_stacks, slug, "imports_count")
+        raw_count = int(result.get("imports_count", 0) or 0)
+        result["catalog_imports_count"] = raw_count
+        result["imports_count"] = max(0, raw_count - int(SEED_STACK_IMPORT_BASELINES.get(slug, 0) or 0))
         self._invalidate_cache("overview:")
         return result
 
     def increment_showcase_import(self, slug: str) -> dict[str, int]:
         result = self._increment_counter(showcase_entries, slug, "imports_count")
+        raw_count = int(result.get("imports_count", 0) or 0)
+        result["catalog_imports_count"] = raw_count
+        result["imports_count"] = max(0, raw_count - int(SEED_SHOWCASE_IMPORT_BASELINES.get(slug, 0) or 0))
         self._invalidate_cache("overview:")
         return result
 
@@ -1871,16 +1932,16 @@ class HubStore:
             recommendation = dict(recommendation) if recommendation else None
         catalog_active_instances = max(0, int(row["active_instances"] or 0))
         telemetry_active_instances = max(0, int(telemetry.get("active_instances", 0) or 0))
-        effective_success = (
-            float(telemetry.get("success_rate"))
-            if telemetry.get("run_count", 0) >= int((runtime_settings or {}).get("featured_min_signal_count", 3) or 3)
-            else float(row["success_rate"])
-        )
+        telemetry_run_count = max(0, int(telemetry.get("run_count", 0) or 0))
+        has_live_telemetry = telemetry_run_count > 0 or telemetry_active_instances > 0
+        effective_success = float(telemetry.get("success_rate", 0.0) or 0.0) if telemetry_run_count > 0 else 0.0
         effective_latency = (
-            float(telemetry.get("avg_latency_ms"))
-            if telemetry.get("run_count", 0) >= int((runtime_settings or {}).get("featured_min_signal_count", 3) or 3)
-            else float(row["avg_latency_ms"])
+            float(telemetry.get("avg_latency_ms", 0.0) or 0.0)
+            if telemetry_run_count > 0 and float(telemetry.get("avg_latency_ms", 0.0) or 0.0) > 0
+            else None
         )
+        catalog_installs = max(0, int(row["installs"] or 0))
+        observed_installs = max(0, catalog_installs - int(SEED_MCP_INSTALL_BASELINES.get(slug, 0) or 0))
         dependencies = self._build_dependency_payload(
             install_method=str(row["install_method"]),
             language=str(row["language"]),
@@ -1898,8 +1959,8 @@ class HubStore:
             verified=bool(row["verified"]),
             recommendation=dict(recommendation) if recommendation else None,
             active_instances=telemetry_active_instances,
-            installs=int(row["installs"]),
-            signal_count=int(telemetry.get("run_count", 0) or 0),
+            installs=observed_installs,
+            signal_count=telemetry_run_count,
             telemetry=telemetry,
         )
         trust_score = self._build_trust_score_payload(
@@ -1908,6 +1969,7 @@ class HubStore:
             verified=bool(row["verified"]),
             telemetry=telemetry,
             recommendation=dict(recommendation) if recommendation else None,
+            has_live_telemetry=has_live_telemetry,
         )
         summary = {
             **dict(row),
@@ -1915,18 +1977,24 @@ class HubStore:
             "tags": json.loads(str(row["tags_json"])),
             "tools": tools,
             "tool_count": len(tools),
+            "has_live_telemetry": has_live_telemetry,
             "catalog_active_instances": catalog_active_instances,
             "telemetry_active_instances": telemetry_active_instances,
             "active_instances": telemetry_active_instances,
-            "success_rate": round(effective_success, 4),
-            "avg_latency_ms": round(effective_latency, 1),
-            "recent_runs": int(telemetry.get("run_count", 0) or 0),
+            "catalog_success_rate": round(float(row["success_rate"] or 0.0), 4),
+            "catalog_reliability_percent": max(0, min(100, round(float(row["success_rate"] or 0.0) * 100))),
+            "catalog_avg_latency_ms": round(float(row["avg_latency_ms"] or 0.0), 1),
+            "catalog_installs": catalog_installs,
+            "success_rate": round(effective_success, 4) if has_live_telemetry else None,
+            "avg_latency_ms": round(float(effective_latency), 1) if effective_latency is not None else None,
+            "recent_runs": telemetry_run_count,
             "recent_errors": int(telemetry.get("error_count", 0) or 0),
             "verified": bool(row["verified"]),
             "reliability": self._build_reliability_payload(
                 success_rate=effective_success,
                 status=str(row["status"]),
                 verified=bool(row["verified"]),
+                has_live_telemetry=has_live_telemetry,
             ),
             "best_for": self._build_best_for_payload(
                 category=str(row["category"]),
@@ -1951,7 +2019,7 @@ class HubStore:
                 recent_runs=int(telemetry.get("run_count", 0) or 0),
             ),
             "community_signals": {
-                "runs_30d": int(telemetry.get("run_count", 0) or 0),
+                "runs_30d": telemetry_run_count,
                 "instances_30d": int(telemetry.get("active_instances", 0) or 0),
                 "config_consensus": round(float(telemetry.get("config_consensus", 0.0) or 0.0), 4),
                 "repair_rate": round(float(telemetry.get("repair_rate", 0.0) or 0.0), 4),
@@ -1965,6 +2033,7 @@ class HubStore:
                 verified=bool(row["verified"]),
                 status=str(row["status"]),
             ),
+            "installs": observed_installs,
         }
         if detailed:
             summary["recent_telemetry"] = telemetry
@@ -1994,6 +2063,11 @@ class HubStore:
         ).mappings().all()
         summary = {
             **dict(row),
+            "catalog_imports_count": max(0, int(row["imports_count"] or 0)),
+            "imports_count": max(
+                0,
+                int(row["imports_count"] or 0) - int(SEED_STACK_IMPORT_BASELINES.get(str(row["slug"]), 0) or 0),
+            ),
             "items": [dict(item) for item in item_rows],
             "difficulty": self._build_stack_difficulty_payload(
                 item_count=len(item_rows),
@@ -2660,8 +2734,10 @@ class HubStore:
         return "Unknown"
 
     @staticmethod
-    def _build_reliability_payload(*, success_rate: float, status: str, verified: bool) -> dict[str, Any]:
+    def _build_reliability_payload(*, success_rate: float, status: str, verified: bool, has_live_telemetry: bool) -> dict[str, Any]:
         normalized_status = str(status or "").strip().lower()
+        if not has_live_telemetry:
+            return {"label": "No live telemetry", "tone": "muted", "percent": 0, "bar_width": 0}
         percent = max(0, min(100, round(float(success_rate or 0.0) * 100)))
         if normalized_status == "rejected":
             return {"label": "Rejected", "tone": "bad", "percent": percent, "bar_width": percent}
@@ -2870,7 +2946,18 @@ class HubStore:
         verified: bool,
         telemetry: dict[str, Any],
         recommendation: dict[str, Any] | None,
+        has_live_telemetry: bool,
     ) -> dict[str, Any]:
+        if not has_live_telemetry:
+            return {
+                "score": 0.0,
+                "label": "Needs telemetry",
+                "tone": "muted",
+                "performance_component": 0.0,
+                "config_consensus": 0.0,
+                "repair_rate": 0.0,
+                "verified_bonus": 1.0 if verified else 0.0,
+            }
         confidence_norm = max(0.0, min(1.0, float(install_confidence.get("score", 0.0) or 0.0) / 10.0))
         performance = HubStore._bayesian_success_score(
             success_rate=float(success_rate or 0.0),

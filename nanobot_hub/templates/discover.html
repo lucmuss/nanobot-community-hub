@@ -6,6 +6,7 @@
         <p class="eyebrow">Marketplace</p>
         <h2>Find stable MCP servers with community-backed configuration hints</h2>
         <p class="muted">Browse reliable MCP servers, inspect their tools, and compare recommended config before importing them into Nanobot.</p>
+        <p class="muted">Reliability filters use live telemetry when available and otherwise fall back to curated catalog baselines for discovery only.</p>
       </div>
       <div class="page-header-actions">
         {% if hub_admin %}
@@ -21,7 +22,7 @@
       <span class="meta-chip"><strong>Registry</strong>{{ overview.registry_count }} entries</span>
       <span class="meta-chip"><strong>Verified</strong>{{ overview.verified_count }}</span>
       <span class="meta-chip"><strong>Top telemetry category</strong>{{ overview.top_category or "No live telemetry" }}</span>
-      <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
+      <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "No live telemetry" }}</span>
     </div>
   </section>
 
@@ -97,7 +98,7 @@
         <div class="stat-line">
           <div>
             <strong>{{ item.name }}</strong>
-            <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} active instances</div>
+            <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} observed instances</div>
           </div>
           <a class="button secondary" href="/mcp/{{ item.slug }}">Open</a>
         </div>

@@ -25,7 +25,9 @@
           <div class="reliability-stack" style="margin-top: 10px;">
             <div style="display:flex;justify-content:space-between;gap:12px;">
               <span class="muted" title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully.">{{ item.reliability.label }}</span>
-              <strong title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully.">{{ item.reliability.percent }}%</strong>
+              <strong title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully.">
+                {% if item.has_live_telemetry %}{{ item.reliability.percent }}%{% else %}No live data{% endif %}
+              </strong>
             </div>
             <div class="reliability-bar">
               <div class="reliability-fill {{ item.reliability.tone }}" style="width: {{ item.reliability.bar_width }}%;"></div>
@@ -35,7 +37,7 @@
             <div class="meta-pair"><strong title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals.">Trust Score</strong><span title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals.">{{ item.trust_score.score }}/10</span></div>
             <div class="meta-pair"><strong title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances.">Confidence</strong><span title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances.">{{ item.install_confidence.score }}/10</span></div>
             <div class="meta-pair"><strong>Signals</strong><span>{{ item.install_confidence.based_on_instances }}</span></div>
-            <div class="meta-pair"><strong>Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+            <div class="meta-pair"><strong>Latency</strong><span>{% if item.avg_latency_ms is not none %}{{ item.avg_latency_ms }} ms{% else %}No live telemetry{% endif %}</span></div>
           </div>
         </div>
         <div class="insight-panel local">
@@ -55,7 +57,7 @@
 
       <div class="meta-grid" style="margin-top: 14px;">
         <div class="meta-pair"><strong>Observed Instances (30d)</strong><span>{{ item.active_instances }}</span></div>
-        <div class="meta-pair"><strong>Installs</strong><span>{{ item.installs }}</span></div>
+        <div class="meta-pair"><strong>Observed installs</strong><span>{{ item.installs }}</span></div>
         <div class="meta-pair"><strong>Tools</strong><span>{{ item.tool_count }}</span></div>
         <div class="meta-pair"><strong>Usage trend</strong><span>{{ item.usage_trend.label }} · {{ item.usage_trend.runs_24h }} in 24h</span></div>
       </div>

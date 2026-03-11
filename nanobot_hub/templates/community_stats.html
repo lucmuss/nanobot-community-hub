@@ -15,7 +15,7 @@
       <span class="meta-chip {{ overview.network_health.tone }}" title="{{ overview.network_health.summary }}"><strong>Network Health</strong>{{ overview.network_health.score }} · {{ overview.network_health.label }}</span>
       <span class="meta-chip"><strong>Top telemetry category</strong>{{ overview.top_category or "No live telemetry" }}</span>
       <span class="meta-chip"><strong>Unique MCPs</strong>{{ overview.registry_count }}</span>
-      <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
+      <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "No live telemetry" }}</span>
     </div>
   </section>
 
@@ -65,7 +65,10 @@
         <div class="stat-line">
           <div>
             <strong>{{ item.name }}</strong>
-            <div class="muted">{{ item.reliability.label }} · {{ item.reliability.percent }}% · {{ item.avg_latency_ms }} ms</div>
+            <div class="muted">
+              {{ item.reliability.label }}
+              {% if item.has_live_telemetry %} · {{ item.reliability.percent }}% · {{ item.avg_latency_ms }} ms{% else %} · no live telemetry yet{% endif %}
+            </div>
           </div>
           <span class="pill {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs.">{{ item.reliability.label }}</span>
         </div>
@@ -80,7 +83,7 @@
         <div class="stat-line">
           <div>
             <strong>{{ item.name }}</strong>
-            <div class="muted">{{ item.installs }} installs · {{ item.active_instances }} observed instances</div>
+            <div class="muted">{{ item.installs }} observed installs · {{ item.active_instances }} observed instances</div>
           </div>
         <div style="display:flex; gap:8px; align-items:center;">
           <span class="pill {{ item.trust_score.tone }}" title="Trust Score combines reliability, install evidence, latency, and verification status.">{{ item.trust_score.score }}/10</span>
@@ -116,10 +119,12 @@
       <div class="stat-line">
         <div>
           <strong>{{ item.name }}</strong>
-          <div class="muted">{{ item.active_instances }} observed instances · {{ item.installs }} installs</div>
+          <div class="muted">{{ item.active_instances }} observed instances · {{ item.installs }} observed installs</div>
         </div>
         <div style="display:flex; gap:8px; align-items:center;">
-          <span class="pill {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs.">{{ item.reliability.percent }}%</span>
+          <span class="pill {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs.">
+            {% if item.has_live_telemetry %}{{ item.reliability.percent }}%{% else %}No live data{% endif %}
+          </span>
           {% if local_gui_url %}
             <a class="button secondary" href="{{ local_gui_url }}/community/mcp/{{ item.slug }}">Open in local Nanobot</a>
           {% endif %}
