@@ -6,6 +6,34 @@
     <p class="muted" style="margin: 0;">Use this page to submit MCPs, curate stacks, publish showcase entries, and review lightweight moderation queues.</p>
   </section>
 
+  <section class="compact-kpi-grid" style="margin-bottom: 24px;">
+    <article class="compact-kpi">
+      <span class="muted">MCP Queue</span>
+      <strong>{{ admin_overview.mcp_queue }}</strong>
+      <small>pending MCP reviews</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Stack Queue</span>
+      <strong>{{ admin_overview.stack_queue }}</strong>
+      <small>pending stack reviews</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Showcase Queue</span>
+      <strong>{{ admin_overview.showcase_queue }}</strong>
+      <small>pending showcase reviews</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Runs Today</span>
+      <strong>{{ admin_overview.runs_today }}</strong>
+      <small>{{ "telemetry active" if admin_overview.telemetry_active else "seed-only mode" }}</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Error Hotspots</span>
+      <strong>{{ admin_overview.error_hotspots }}</strong>
+      <small>active clustered failures</small>
+    </article>
+  </section>
+
   <div class="panel-grid two" style="margin-bottom: 24px;">
     <section class="panel">
       <p class="eyebrow">Submit MCP</p>
@@ -149,6 +177,21 @@
         </div>
       {% else %}
         <p class="muted">No submission audit entries recorded yet.</p>
+      {% endfor %}
+    </section>
+
+    <section class="panel">
+      <p class="eyebrow">Current Error Hotspots</p>
+      {% for item in error_hotspots %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }} · {{ item.error_code }}</strong>
+            <div class="muted">{{ item.summary }}</div>
+          </div>
+          <span class="pill warn">{{ item.event_count }} events</span>
+        </div>
+      {% else %}
+        <p class="muted">No community error hotspots are recorded yet.</p>
       {% endfor %}
     </section>
   </div>

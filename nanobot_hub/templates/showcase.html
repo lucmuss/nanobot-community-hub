@@ -1,8 +1,15 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="panel" style="margin-bottom:24px;">
-    <p class="eyebrow">Showcase</p>
-    <h2 style="margin-top:0;">See how other Nanobot users combine MCPs in practice</h2>
+  <section class="page-header">
+    <div class="page-header-main">
+      <div class="page-header-copy">
+        <p class="eyebrow">Showcase</p>
+        <h2>See how other Nanobot users combine MCPs in practice</h2>
+        <p class="muted">The showcase stays practical: use case, stack, and the prompt that made the setup worth publishing.</p>
+      </div>
+    </div>
+  </section>
+  <section class="panel" style="margin-top:24px;">
     <form class="search-form" hx-get="/partials/showcase-results" hx-target="#showcase-results" hx-trigger="submit, keyup changed delay:300ms from:#showcase-q, change from:#showcase-category">
       <div class="search-row" style="grid-template-columns:minmax(0,1fr) 220px auto;">
         <input id="showcase-q" type="text" name="q" value="{{ query }}" placeholder="Search title or use case" data-testid="hub-showcase-query">
@@ -16,7 +23,7 @@
       </div>
     </form>
   </section>
-  <section id="showcase-results">
+  <section id="showcase-results" style="margin-top:24px;">
     {% include "partials/showcase_results.html" %}
   </section>
 {% endblock %}

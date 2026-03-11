@@ -1,20 +1,26 @@
 <div class="list-stack">
   {% for item in items %}
     <article class="panel" data-testid="hub-stack-card-{{ item.slug }}">
-      <div style="display:flex;justify-content:space-between;gap:18px;">
-        <div>
-          <h3 style="margin:0 0 6px;">{{ item.title }}</h3>
+      <div class="page-header-main">
+        <div class="page-header-copy">
+          <h3>{{ item.title }}</h3>
           <p class="muted">{{ item.description }}</p>
-          <div class="tool-list">
-            {% for entry in item["items"] %}
-              <span class="tool-chip">{{ entry.name }}</span>
-            {% endfor %}
-          </div>
         </div>
-        <div class="meta-grid" style="grid-template-columns:1fr;">
-          <div class="meta-pair"><strong>Rating</strong><span>{{ item.rating }}</span></div>
-          <div class="meta-pair"><strong>Imports</strong><span>{{ item.imports_count }}</span></div>
-          <div class="meta-pair"><strong>Recommended Model</strong><span>{{ item.recommended_model }}</span></div>
+        <span class="pill {{ item.difficulty.tone }}">{{ item.difficulty.label }}</span>
+      </div>
+      <div class="page-meta-bar" style="margin-top: 10px;">
+        <span class="meta-chip"><strong>Rating</strong>{{ item.rating }}</span>
+        <span class="meta-chip"><strong>Imports</strong>{{ item.imports_count }}</span>
+        <span class="meta-chip"><strong>Model</strong>{{ item.recommended_model }}</span>
+        <span class="meta-chip {{ item.difficulty.tone }}"><strong>Difficulty</strong>{{ item.difficulty.label }}</span>
+      </div>
+      <div class="insight-panel community" style="margin-top: 14px;">
+        <strong>Stack diagram</strong>
+        <div class="flow-diagram" style="margin-top: 12px;">
+          {% for entry in item["items"] %}
+            <span class="flow-node">{{ entry.name }}</span>
+            {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
+          {% endfor %}
         </div>
       </div>
       <div style="display:flex;justify-content:flex-end;margin-top:14px;">

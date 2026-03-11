@@ -1,30 +1,64 @@
 <div class="list-stack">
   {% for item in items %}
     <article class="panel" data-testid="hub-mcp-card-{{ item.slug }}">
-      <div style="display:flex;justify-content:space-between;gap:18px;align-items:flex-start;">
-        <div>
-          <h3 style="margin:0 0 6px;">{{ item.name }}</h3>
-          <p class="muted" style="margin:0 0 10px;">{{ item.description }}</p>
-          <div class="tag-list" style="margin-bottom:10px;">
-            <span class="tag-chip">{{ item.category }}</span>
-            <span class="tag-chip">{{ item.language }}</span>
-            <span class="tag-chip">Install {{ item.install_method }}</span>
-            {% if item.verified %}<span class="tag-chip">Verified</span>{% endif %}
-          </div>
-          <div class="tool-list">
-            {% for tool in item.tools[:4] %}
-              <span class="tool-chip">{{ tool }}</span>
-            {% endfor %}
+      <div class="page-header-main">
+        <div class="page-header-copy">
+          <h3>{{ item.name }}</h3>
+          <p class="muted">{{ item.description }}</p>
+        </div>
+        <div class="pill {{ item.reliability.tone }}">{{ item.reliability.label }}</div>
+      </div>
+
+      <div class="page-meta-bar" style="margin-top: 10px;">
+        <span class="meta-chip"><strong>Category</strong>{{ item.category }}</span>
+        <span class="meta-chip"><strong>Language</strong>{{ item.language }}</span>
+        <span class="meta-chip"><strong>Install</strong>{{ item.install_method }}</span>
+        <span class="meta-chip {{ item.difficulty.tone }}"><strong>Difficulty</strong>{{ item.difficulty.label }}</span>
+        {% if item.verified %}<span class="meta-chip good"><strong>Trust</strong>Verified</span>{% endif %}
+      </div>
+
+      <div class="panel-grid two" style="margin-top: 14px;">
+        <div class="insight-panel community">
+          <strong>Community reliability</strong>
+          <div class="reliability-stack" style="margin-top: 10px;">
+            <div style="display:flex;justify-content:space-between;gap:12px;">
+              <span class="muted">{{ item.reliability.label }}</span>
+              <strong>{{ item.reliability.percent }}%</strong>
+            </div>
+            <div class="reliability-bar">
+              <div class="reliability-fill {{ item.reliability.tone }}" style="width: {{ item.reliability.bar_width }}%;"></div>
+            </div>
           </div>
         </div>
-        <div style="min-width:230px;">
-          <div class="meta-grid" style="grid-template-columns:1fr;">
-            <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
-            <div class="meta-pair"><strong>Success Rate</strong><span>{{ "%.0f"|format(item.success_rate * 100) }}%</span></div>
-            <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
-          </div>
+        <div class="insight-panel local">
+          <strong>Install preview</strong>
+          <div class="muted" style="margin-top: 10px;">{{ item.dependencies|join(" · ") if item.dependencies else "No dependency hint" }}</div>
+          <div class="muted" style="margin-top: 6px;">{{ item.best_for|join(", ") if item.best_for else "General workflows" }}</div>
         </div>
       </div>
+
+      <div class="meta-grid" style="margin-top: 14px;">
+        <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
+        <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+        <div class="meta-pair"><strong>Tools</strong><span>{{ item.tool_count }}</span></div>
+        <div class="meta-pair"><strong>Observed locally</strong><span>{{ item.recent_runs }} recent runs</span></div>
+      </div>
+
+      {% if item.known_fixes %}
+        <div class="insight-panel community" style="margin-top: 14px;">
+          <strong>Known fixes</strong>
+          <div class="muted" style="margin-top: 10px;">
+            {{ item.known_fixes[0].title }}{% if item.known_fixes[0].evidence_count %} · {{ item.known_fixes[0].evidence_count }} signals{% endif %}
+          </div>
+        </div>
+      {% endif %}
+
+      <div class="tool-list" style="margin-top: 14px;">
+        {% for tool in item.tools[:4] %}
+          <span class="tool-chip">{{ tool }}</span>
+        {% endfor %}
+      </div>
+
       <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:16px;">
         <div class="muted mono">{{ item.repo_url }}</div>
         <div style="display:flex;gap:8px;">

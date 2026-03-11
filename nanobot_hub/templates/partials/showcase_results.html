@@ -2,18 +2,28 @@
   {% for item in items %}
     <article class="panel" data-testid="hub-showcase-card-{{ item.slug }}">
       <p class="eyebrow">{{ item.category }}</p>
-      <h3 style="margin-top:0;">{{ item.title }}</h3>
-      <p class="muted">{{ item.description }}</p>
-      {% if item.stack %}
-        <div class="meta-pair" style="margin-bottom:14px;">
+      <div class="page-header-main">
+        <div class="page-header-copy">
+          <h3>{{ item.title }}</h3>
+          <p class="muted">{{ item.description }}</p>
+        </div>
+        <span class="pill neutral">{{ item.imports_count }} imports</span>
+      </div>
+      <div class="meta-grid" style="margin-top: 14px;">
+        <div class="meta-pair"><strong>Use Case</strong><span>{{ item.use_case }}</span></div>
+        <div class="meta-pair"><strong>Recommended Model</strong><span>{{ item.stack.recommended_model if item.stack else "Not set" }}</span></div>
+      </div>
+      {% if item.stack_items %}
+        <div class="insight-panel community" style="margin-top: 14px;">
           <strong>Stack</strong>
-          <span>{{ item.stack.title }}</span>
+          <div class="flow-diagram" style="margin-top: 12px;">
+            {% for entry in item.stack_items %}
+              <span class="flow-node">{{ entry.name }}</span>
+              {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
+            {% endfor %}
+          </div>
         </div>
       {% endif %}
-      <div class="meta-grid">
-        <div class="meta-pair"><strong>Imports</strong><span>{{ item.imports_count }}</span></div>
-        <div class="meta-pair"><strong>Upvotes</strong><span>{{ item.upvotes_count }}</span></div>
-      </div>
       <div class="meta-pair" style="margin-top:14px;">
         <strong>Example Prompt</strong>
         <span>{{ item.example_prompt }}</span>

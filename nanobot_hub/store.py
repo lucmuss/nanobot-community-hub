@@ -581,10 +581,13 @@ class HubStore:
         *,
         search: str = "",
         category: str = "",
+        language: str = "",
+        min_reliability: int = 0,
         sort: str = "trending",
         include_private: bool = False,
     ) -> list[dict[str, Any]]:
         telemetry = self._telemetry_stats_by_slug()
+        minimum_percent = max(0, min(100, int(min_reliability or 0)))
         with self.engine.connect() as conn:
             stmt = select(mcp_servers)
             conditions = []
@@ -601,10 +604,23 @@ class HubStore:
                 )
             if category:
                 conditions.append(mcp_servers.c.category == category)
+            if language:
+                conditions.append(mcp_servers.c.language == language)
             if conditions:
                 stmt = stmt.where(and_(*conditions))
             rows = conn.execute(stmt).mappings().all()
-            items = [self._build_mcp_summary(conn, row, telemetry.get(str(row["slug"]), {})) for row in rows]
+            items = []
+            for row in rows:
+                item = self._build_mcp_summary(conn, row, telemetry.get(str(row["slug"]), {}))
+                item["error_clusters"] = self._build_error_clusters(conn, str(row["slug"]))
+                item["known_fixes"] = self._build_known_fix_summaries(item)
+                items.append(item)
+            if minimum_percent > 0:
+                items = [
+                    item
+                    for item in items
+                    if int(item.get("reliability", {}).get("percent", 0) or 0) >= minimum_percent
+                ]
 
         sort_key = str(sort or "trending").lower()
         if sort_key == "new":
@@ -640,7 +656,161 @@ class HubStore:
                 .order_by(mcp_known_issues.c.id.asc())
             ).all()
             item["known_issues"] = [str(issue[0]) for issue in issue_rows]
+            item["error_clusters"] = self._build_error_clusters(conn, slug)
+            item["known_fixes"] = self._build_known_fix_summaries(item)
             return item
+
+    def get_mcp_fix_suggestions(
+        self,
+        slug: str,
+        *,
+        error_code: str = "",
+        current_transport: str = "",
+        current_timeout: int = 0,
+        missing_runtimes: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        item = self.get_mcp(slug, include_private=True)
+        if item is None:
+            raise ValueError("MCP server not found.")
+
+        normalized_error = str(error_code or "").strip().lower()
+        observed_transport = str(current_transport or "").strip()
+        observed_timeout = max(0, int(current_timeout or 0))
+        missing = {
+            str(name).strip().lower()
+            for name in (missing_runtimes or [])
+            if str(name).strip()
+        }
+        fixes: list[dict[str, Any]] = []
+        recommendation = item.get("recommended_config") if isinstance(item.get("recommended_config"), dict) else {}
+        dependencies = [str(entry).strip() for entry in item.get("dependencies", []) if str(entry).strip()]
+        known_issues = [str(entry).strip() for entry in item.get("known_issues", []) if str(entry).strip()]
+        error_clusters = item.get("error_clusters") if isinstance(item.get("error_clusters"), list) else []
+
+        if recommendation:
+            config_changes: dict[str, Any] = {}
+            summary_parts: list[str] = []
+            recommended_transport = str(recommendation.get("transport", "")).strip()
+            recommended_timeout = int(recommendation.get("timeout", 0) or 0)
+            recommended_retries = int(recommendation.get("retries", 0) or 0)
+            if recommended_transport and recommended_transport != observed_transport:
+                config_changes["transport"] = recommended_transport
+                summary_parts.append(f"switch transport to {recommended_transport}")
+            if recommended_timeout > 0 and recommended_timeout != observed_timeout:
+                config_changes["tool_timeout"] = recommended_timeout
+                summary_parts.append(f"increase timeout to {recommended_timeout}s")
+            if config_changes:
+                fixes.append(
+                    {
+                        "id": "apply-recommended-config",
+                        "title": "Apply the community-recommended config",
+                        "summary": ", then ".join(summary_parts).capitalize() + ".",
+                        "action_type": "apply_recommended_config",
+                        "config_changes": config_changes,
+                        "recommended_config": {
+                            "transport": recommended_transport,
+                            "timeout": recommended_timeout,
+                            "retries": recommended_retries,
+                        },
+                        "confidence_score": float(recommendation.get("confidence_score", 0.0) or 0.0),
+                        "based_on_instances": int(recommendation.get("based_on_instances", 0) or 0),
+                    }
+                )
+
+        dependency_text = " ".join(dependencies).lower()
+        if ("node" in missing or "npx" in missing or "npm" in missing) and "node.js" in dependency_text:
+            fixes.append(
+                {
+                    "id": "repair-install-node",
+                    "title": "Install the Node.js runtime",
+                    "summary": "This MCP depends on Node.js and currently reports a missing runtime.",
+                    "action_type": "repair_recipe",
+                    "repair_recipe": "install_node",
+                    "confidence_score": 0.86,
+                    "based_on_instances": 0,
+                }
+            )
+        if ("python" in missing or "uv" in missing or "pip" in missing) and "python" in dependency_text:
+            fixes.append(
+                {
+                    "id": "repair-install-uv",
+                    "title": "Install the Python runtime helpers",
+                    "summary": "This MCP depends on Python tooling and currently reports a missing runtime.",
+                    "action_type": "repair_recipe",
+                    "repair_recipe": "install_uv",
+                    "confidence_score": 0.82,
+                    "based_on_instances": 0,
+                }
+            )
+
+        if normalized_error == "timeout" and recommendation:
+            recommended_timeout = int(recommendation.get("timeout", 0) or 0)
+            if recommended_timeout and recommended_timeout > observed_timeout:
+                fixes.append(
+                    {
+                        "id": "timeout-community-default",
+                        "title": f"Increase timeout to {recommended_timeout} seconds",
+                        "summary": "Community telemetry shows this MCP is more reliable with a longer timeout.",
+                        "action_type": "apply_recommended_config",
+                        "config_changes": {"tool_timeout": recommended_timeout},
+                        "recommended_config": {
+                            "transport": str(recommendation.get("transport", "")).strip(),
+                            "timeout": recommended_timeout,
+                            "retries": int(recommendation.get("retries", 0) or 0),
+                        },
+                        "confidence_score": float(recommendation.get("confidence_score", 0.0) or 0.0),
+                        "based_on_instances": int(recommendation.get("based_on_instances", 0) or 0),
+                    }
+                )
+
+        if not fixes and known_issues:
+            issue_hint = known_issues[0]
+            fixes.append(
+                {
+                    "id": "review-known-issues",
+                    "title": "Review the known community issue",
+                    "summary": issue_hint,
+                    "action_type": "manual_review",
+                    "config_changes": {},
+                    "confidence_score": 0.5,
+                    "based_on_instances": 0,
+                }
+            )
+
+        for cluster in error_clusters:
+            if not isinstance(cluster, dict):
+                continue
+            code = str(cluster.get("error_code", "")).strip()
+            if code == normalized_error and code == "timeout" and recommendation:
+                recommended_timeout = int(recommendation.get("timeout", 0) or 0)
+                if recommended_timeout and recommended_timeout > observed_timeout:
+                    fixes.append(
+                        {
+                            "id": "cluster-timeout-fix",
+                            "title": f"Match the community timeout profile ({recommended_timeout}s)",
+                            "summary": str(cluster.get("summary", "")).strip()
+                            or "Timeout errors are commonly resolved by using the community timeout profile.",
+                            "action_type": "apply_recommended_config",
+                            "config_changes": {"tool_timeout": recommended_timeout},
+                            "recommended_config": {
+                                "transport": str(recommendation.get("transport", "")).strip(),
+                                "timeout": recommended_timeout,
+                                "retries": int(recommendation.get("retries", 0) or 0),
+                            },
+                            "confidence_score": float(cluster.get("confidence_score", 0.0) or 0.0),
+                            "based_on_instances": int(cluster.get("event_count", 0) or 0),
+                        }
+                    )
+
+        deduped: list[dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        for item_fix in fixes:
+            fix_id = str(item_fix.get("id", "")).strip()
+            if not fix_id or fix_id in seen_ids:
+                continue
+            seen_ids.add(fix_id)
+            deduped.append(item_fix)
+        return deduped
 
     def resolve_repo(self, repo_url: str) -> dict[str, Any] | None:
         normalized = _normalize_repo_url(repo_url)
@@ -728,14 +898,30 @@ class HubStore:
             rows = conn.execute(stmt).mappings().all()
             items: list[dict[str, Any]] = []
             for row in rows:
-                stack_stmt = select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+                stack_stmt = select(
+                    mcp_stacks.c.slug,
+                    mcp_stacks.c.title,
+                    mcp_stacks.c.recommended_model,
+                    mcp_stacks.c.use_case,
+                ).where(mcp_stacks.c.slug == row["stack_slug"])
                 if not include_private:
                     stack_stmt = stack_stmt.where(mcp_stacks.c.is_public.is_(True))
                 stack_row = conn.execute(stack_stmt).mappings().first()
+                stack_items: list[dict[str, Any]] = []
+                if stack_row is not None:
+                    stack_items = conn.execute(
+                        select(mcp_servers.c.slug, mcp_servers.c.name)
+                        .select_from(
+                            mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+                        )
+                        .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
+                        .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
+                    ).mappings().all()
                 items.append(
                     {
                         **dict(row),
                         "stack": dict(stack_row) if stack_row else None,
+                        "stack_items": [dict(item) for item in stack_items],
                     }
                 )
             return items
@@ -757,6 +943,48 @@ class HubStore:
                 items.append(item)
             return items
 
+    def list_error_hotspots(self, limit: int = 6) -> list[dict[str, Any]]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(
+                    telemetry_events.c.mcp_slug,
+                    telemetry_events.c.error_code,
+                    func.count().label("event_count"),
+                    func.count(func.distinct(telemetry_events.c.instance_hash)).label("instance_count"),
+                    func.avg(func.nullif(telemetry_events.c.latency_ms, 0)).label("avg_latency_ms"),
+                )
+                .where(
+                    and_(
+                        telemetry_events.c.success.is_(False),
+                        telemetry_events.c.error_code != "",
+                    )
+                )
+                .group_by(telemetry_events.c.mcp_slug, telemetry_events.c.error_code)
+                .order_by(func.count().desc(), telemetry_events.c.mcp_slug.asc(), telemetry_events.c.error_code.asc())
+                .limit(max(1, int(limit)))
+            ).mappings().all()
+            results: list[dict[str, Any]] = []
+            for row in rows:
+                server = conn.execute(
+                    select(mcp_servers.c.name).where(mcp_servers.c.slug == row["mcp_slug"])
+                ).mappings().first()
+                results.append(
+                    {
+                        "slug": str(row["mcp_slug"]),
+                        "name": str(server["name"]) if server else str(row["mcp_slug"]),
+                        "error_code": str(row["error_code"]),
+                        "event_count": int(row["event_count"] or 0),
+                        "instance_count": int(row["instance_count"] or 0),
+                        "avg_latency_ms": round(float(row["avg_latency_ms"] or 0.0), 1),
+                        "summary": self._summarize_error_cluster(
+                            str(row["error_code"]),
+                            event_count=int(row["event_count"] or 0),
+                            instance_count=int(row["instance_count"] or 0),
+                        ),
+                    }
+                )
+            return results
+
     def get_overview_stats(self) -> dict[str, Any]:
         telemetry = self._telemetry_stats_by_slug()
         marketplace = self.list_mcps()
@@ -768,12 +996,40 @@ class HubStore:
                 )
             ).scalar_one()
         active_instances = sum(int(item["active_instances"]) for item in marketplace)
+        category_counts: dict[str, int] = {}
+        for item in marketplace:
+            category = str(item.get("category", "")).strip() or "Other"
+            category_counts[category] = category_counts.get(category, 0) + 1
+        top_category = ""
+        if category_counts:
+            top_category = max(category_counts.items(), key=lambda entry: (entry[1], entry[0]))[0]
+        trending_mcps = sorted(
+            marketplace,
+            key=lambda item: (
+                int(item.get("recent_runs", 0) or 0),
+                int(item.get("active_instances", 0) or 0),
+                float(item.get("success_rate", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )[:3]
+        most_reliable_mcps = sorted(
+            marketplace,
+            key=lambda item: (
+                float(item.get("success_rate", 0.0) or 0.0),
+                int(item.get("active_instances", 0) or 0),
+            ),
+            reverse=True,
+        )[:3]
         return {
             "registry_count": len(marketplace),
             "verified_count": sum(1 for item in marketplace if item["verified"]),
             "active_instances": active_instances,
             "runs_today": int(total_events_today or 0),
+            "top_category": top_category,
+            "unique_categories": len(category_counts),
             "top_mcps": marketplace[:5],
+            "trending_mcps": trending_mcps,
+            "most_reliable_mcps": most_reliable_mcps,
             "telemetry_active": bool(telemetry),
         }
 
@@ -1059,11 +1315,25 @@ class HubStore:
             if row is None:
                 return None
             stack_row = conn.execute(
-                select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+                select(
+                    mcp_stacks.c.slug,
+                    mcp_stacks.c.title,
+                    mcp_stacks.c.recommended_model,
+                    mcp_stacks.c.use_case,
+                ).where(mcp_stacks.c.slug == row["stack_slug"])
             ).mappings().first()
+            stack_items = conn.execute(
+                select(mcp_servers.c.slug, mcp_servers.c.name)
+                .select_from(
+                    mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+                )
+                .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
+                .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
+            ).mappings().all()
             return {
                 **dict(row),
                 "stack": dict(stack_row) if stack_row else None,
+                "stack_items": [dict(item) for item in stack_items],
             }
 
     def list_mcp_moderation_queue(self) -> list[dict[str, Any]]:
@@ -1095,9 +1365,28 @@ class HubStore:
             items: list[dict[str, Any]] = []
             for row in rows:
                 stack_row = conn.execute(
-                    select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+                    select(
+                        mcp_stacks.c.slug,
+                        mcp_stacks.c.title,
+                        mcp_stacks.c.recommended_model,
+                        mcp_stacks.c.use_case,
+                    ).where(mcp_stacks.c.slug == row["stack_slug"])
                 ).mappings().first()
-                items.append({**dict(row), "stack": dict(stack_row) if stack_row else None})
+                stack_items = conn.execute(
+                    select(mcp_servers.c.slug, mcp_servers.c.name)
+                    .select_from(
+                        mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+                    )
+                    .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
+                    .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
+                ).mappings().all()
+                items.append(
+                    {
+                        **dict(row),
+                        "stack": dict(stack_row) if stack_row else None,
+                        "stack_items": [dict(item) for item in stack_items],
+                    }
+                )
             return items
 
     def moderate_mcp(self, slug: str, *, action: str) -> dict[str, Any]:
@@ -1182,6 +1471,13 @@ class HubStore:
             ).all()
             return [str(row[0]) for row in rows]
 
+    def languages(self) -> list[str]:
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(mcp_servers.c.language).distinct().order_by(mcp_servers.c.language.asc())
+            ).all()
+            return [str(row[0]) for row in rows]
+
     def showcase_categories(self) -> list[str]:
         with self.engine.connect() as conn:
             rows = conn.execute(
@@ -1226,6 +1522,26 @@ class HubStore:
             "recent_runs": int(telemetry.get("run_count", 0) or 0),
             "recent_errors": int(telemetry.get("error_count", 0) or 0),
             "verified": bool(row["verified"]),
+            "reliability": self._build_reliability_payload(
+                success_rate=effective_success,
+                status=str(row["status"]),
+                verified=bool(row["verified"]),
+            ),
+            "best_for": self._build_best_for_payload(
+                category=str(row["category"]),
+                tags=json.loads(str(row["tags_json"])),
+                tools=tools,
+            ),
+            "dependencies": self._build_dependency_payload(
+                install_method=str(row["install_method"]),
+                language=str(row["language"]),
+                status=str(row["status"]),
+            ),
+            "difficulty": self._build_mcp_difficulty_payload(
+                install_method=str(row["install_method"]),
+                verified=bool(row["verified"]),
+                status=str(row["status"]),
+            ),
         }
         if detailed:
             summary["recent_telemetry"] = telemetry
@@ -1239,7 +1555,13 @@ class HubStore:
         detailed: bool = False,
     ) -> dict[str, Any]:
         item_rows = conn.execute(
-            select(mcp_servers.c.slug, mcp_servers.c.name, mcp_servers.c.repo_url)
+            select(
+                mcp_servers.c.slug,
+                mcp_servers.c.name,
+                mcp_servers.c.repo_url,
+                mcp_servers.c.install_method,
+                mcp_servers.c.status,
+            )
             .select_from(
                 mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
             )
@@ -1249,6 +1571,11 @@ class HubStore:
         summary = {
             **dict(row),
             "items": [dict(item) for item in item_rows],
+            "difficulty": self._build_stack_difficulty_payload(
+                item_count=len(item_rows),
+                install_methods=[str(item.get("install_method", "")) for item in item_rows],
+            ),
+            "diagram": " -> ".join(str(item.get("name", "")) for item in item_rows if str(item.get("name", "")).strip()),
         }
         if detailed:
             summary["mcp_count"] = len(item_rows)
@@ -1471,3 +1798,184 @@ class HubStore:
         if method == "docker":
             return "Docker"
         return "Unknown"
+
+    @staticmethod
+    def _build_reliability_payload(*, success_rate: float, status: str, verified: bool) -> dict[str, Any]:
+        normalized_status = str(status or "").strip().lower()
+        percent = max(0, min(100, round(float(success_rate or 0.0) * 100)))
+        if normalized_status == "rejected":
+            return {"label": "Rejected", "tone": "bad", "percent": percent, "bar_width": percent}
+        if percent >= 95 and verified:
+            return {"label": "Stable", "tone": "good", "percent": percent, "bar_width": percent}
+        if percent >= 88:
+            return {"label": "Reliable", "tone": "good", "percent": percent, "bar_width": percent}
+        if percent >= 76:
+            return {"label": "Experimental", "tone": "warn", "percent": percent, "bar_width": percent}
+        return {"label": "Unstable", "tone": "bad", "percent": percent, "bar_width": percent}
+
+    @staticmethod
+    def _build_best_for_payload(*, category: str, tags: list[str], tools: list[str]) -> list[str]:
+        tags_lower = {str(tag).strip().lower() for tag in tags}
+        tools_lower = {str(tool).strip().lower() for tool in tools}
+        category_lower = str(category or "").strip().lower()
+        result: list[str] = []
+        if category_lower == "coding":
+            result.extend(["Coding agents", "Repository analysis"])
+        elif category_lower == "research":
+            result.extend(["Research agents", "Knowledge workflows"])
+        elif category_lower == "automation":
+            result.extend(["Automation agents", "Workflow assistants"])
+        if {"browser", "devtools", "playwright"} & tags_lower:
+            result.append("Browser workflows")
+        if {"docs", "doc", "search", "retrieval"} & tags_lower:
+            result.append("Documentation lookup")
+        if any("repo" in tool or "pull" in tool or "issue" in tool for tool in tools_lower):
+            result.append("Code review loops")
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for item in result:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(item)
+        return deduped[:4]
+
+    @staticmethod
+    def _build_dependency_payload(*, install_method: str, language: str, status: str) -> list[str]:
+        method = str(install_method or "").strip().lower()
+        language_label = str(language or "").strip().lower()
+        dependencies: list[str] = []
+        if method in {"npm", "workspace_package", "monorepo"} or language_label == "node.js":
+            dependencies.extend(["Node.js >= 18", "npm / npx"])
+        elif method in {"python", "pip", "uv"} or language_label == "python":
+            dependencies.extend(["Python 3.11+", "uv / pip"])
+        elif method == "docker" or language_label == "docker":
+            dependencies.append("Docker runtime")
+        elif method in {"remote", "http", "sse"} or language_label == "remote":
+            dependencies.append("Remote MCP endpoint")
+        if str(status or "").strip().lower() == "needs_configuration":
+            dependencies.append("Runtime secrets")
+        return dependencies[:4]
+
+    @staticmethod
+    def _build_mcp_difficulty_payload(*, install_method: str, verified: bool, status: str) -> dict[str, Any]:
+        score = 1
+        method = str(install_method or "").strip().lower()
+        normalized_status = str(status or "").strip().lower()
+        if method in {"workspace_package", "monorepo", "docker"}:
+            score += 1
+        if not verified:
+            score += 1
+        if normalized_status == "needs_configuration":
+            score += 1
+        if score <= 1:
+            return {"label": "Beginner", "tone": "good"}
+        if score == 2:
+            return {"label": "Intermediate", "tone": "warn"}
+        return {"label": "Advanced", "tone": "bad"}
+
+    @staticmethod
+    def _build_stack_difficulty_payload(*, item_count: int, install_methods: list[str]) -> dict[str, Any]:
+        score = 1
+        methods = {str(item).strip().lower() for item in install_methods if str(item).strip()}
+        if item_count >= 3:
+            score += 1
+        if {"workspace_package", "monorepo", "docker", "remote"} & methods:
+            score += 1
+        if score <= 1:
+            return {"label": "Beginner", "tone": "good"}
+        if score == 2:
+            return {"label": "Intermediate", "tone": "warn"}
+        return {"label": "Advanced", "tone": "bad"}
+
+    def _build_error_clusters(self, conn, slug: str) -> list[dict[str, Any]]:
+        rows = conn.execute(
+            select(
+                telemetry_events.c.error_code,
+                func.count().label("event_count"),
+                func.avg(func.nullif(telemetry_events.c.latency_ms, 0)).label("avg_latency_ms"),
+                func.count(func.distinct(telemetry_events.c.instance_hash)).label("instance_count"),
+            )
+            .where(
+                and_(
+                    telemetry_events.c.mcp_slug == slug,
+                    telemetry_events.c.success.is_(False),
+                    telemetry_events.c.error_code != "",
+                )
+            )
+            .group_by(telemetry_events.c.error_code)
+            .order_by(func.count().desc(), telemetry_events.c.error_code.asc())
+        ).mappings().all()
+        clusters: list[dict[str, Any]] = []
+        for row in rows[:4]:
+            error_code = str(row["error_code"]).strip()
+            event_count = int(row["event_count"] or 0)
+            instance_count = int(row["instance_count"] or 0)
+            confidence = min(0.95, 0.45 + min(event_count, 12) * 0.03 + min(instance_count, 6) * 0.02)
+            clusters.append(
+                {
+                    "error_code": error_code,
+                    "event_count": event_count,
+                    "instance_count": instance_count,
+                    "avg_latency_ms": float(row["avg_latency_ms"] or 0.0),
+                    "summary": self._summarize_error_cluster(error_code, event_count=event_count, instance_count=instance_count),
+                    "confidence_score": round(confidence, 2),
+                }
+            )
+        return clusters
+
+    @staticmethod
+    def _summarize_error_cluster(error_code: str, *, event_count: int, instance_count: int) -> str:
+        code = str(error_code or "").strip().lower()
+        if code == "timeout":
+            return f"Observed timeout failures {event_count} times across {instance_count} instance fingerprints."
+        if code == "missing_env":
+            return f"Missing secret or env configuration appeared {event_count} times across {instance_count} instances."
+        if code == "unauthorized":
+            return f"Authentication failures appeared {event_count} times across {instance_count} instances."
+        if code == "connection":
+            return f"Connection issues appeared {event_count} times across {instance_count} instances."
+        return f"Community telemetry recorded '{error_code}' {event_count} times across {instance_count} instances."
+
+    def _build_known_fix_summaries(self, item: dict[str, Any]) -> list[dict[str, Any]]:
+        recommendation = item.get("recommended_config") if isinstance(item.get("recommended_config"), dict) else {}
+        clusters = item.get("error_clusters") if isinstance(item.get("error_clusters"), list) else []
+        fixes: list[dict[str, Any]] = []
+        for cluster in clusters:
+            if not isinstance(cluster, dict):
+                continue
+            code = str(cluster.get("error_code", "")).strip().lower()
+            if code == "timeout" and recommendation:
+                fixes.append(
+                    {
+                        "title": "Increase timeout to the community default",
+                        "summary": f"Community telemetry links timeout errors to shorter timeouts. Recommended timeout: {int(recommendation.get('timeout', 0) or 0)}s.",
+                        "evidence_count": int(cluster.get("event_count", 0) or 0),
+                    }
+                )
+            elif code == "missing_env":
+                fixes.append(
+                    {
+                        "title": "Review required environment variables",
+                        "summary": "Community telemetry shows that missing secrets are a common cause of failure for this MCP.",
+                        "evidence_count": int(cluster.get("event_count", 0) or 0),
+                    }
+                )
+            elif code == "unauthorized":
+                fixes.append(
+                    {
+                        "title": "Re-check provider or MCP credentials",
+                        "summary": "Authentication errors are common for this MCP when the service token is invalid or missing.",
+                        "evidence_count": int(cluster.get("event_count", 0) or 0),
+                    }
+                )
+        deduped: list[dict[str, Any]] = []
+        seen_titles: set[str] = set()
+        for fix in fixes:
+            title = str(fix.get("title", "")).strip()
+            if not title or title in seen_titles:
+                continue
+            seen_titles.add(title)
+            deduped.append(fix)
+        return deduped[:4]

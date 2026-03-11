@@ -1,19 +1,51 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="panel hero-panel" style="margin-bottom: 24px;">
-    <p class="eyebrow">Marketplace</p>
-    <h2 style="margin: 0 0 8px;">Find stable MCP servers with community-backed configuration hints</h2>
-    <p class="muted" style="margin: 0;">Browse reliable MCP servers, inspect their tools, and compare recommended config before importing them into Nanobot.</p>
+  <section class="page-header">
+    <div class="page-header-main">
+      <div class="page-header-copy">
+        <p class="eyebrow">Marketplace</p>
+        <h2>Find stable MCP servers with community-backed configuration hints</h2>
+        <p class="muted">Browse reliable MCP servers, inspect their tools, and compare recommended config before importing them into Nanobot.</p>
+      </div>
+      <div class="page-header-actions">
+        {% if hub_admin %}
+          <a class="button" href="/admin">Open Hub Admin</a>
+        {% elif has_hub_admin %}
+          <a class="button" href="/login">Admin Login</a>
+        {% else %}
+          <a class="button" href="/setup/admin">Create First Admin</a>
+        {% endif %}
+      </div>
+    </div>
+    <div class="page-meta-bar">
+      <span class="meta-chip"><strong>Registry</strong>{{ overview.registry_count }} entries</span>
+      <span class="meta-chip"><strong>Verified</strong>{{ overview.verified_count }}</span>
+      <span class="meta-chip"><strong>Top category</strong>{{ overview.top_category or "Unknown" }}</span>
+      <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
+    </div>
   </section>
 
-  <section class="panel" style="margin-bottom: 24px;">
-    <form class="search-form" hx-get="/partials/discover-results" hx-target="#discover-results" hx-trigger="submit, keyup changed delay:300ms from:#discover-q, change from:#discover-category, change from:#discover-sort">
+  <section class="panel" style="margin-top: 24px;">
+    <form class="search-form" hx-get="/partials/discover-results" hx-target="#discover-results" hx-trigger="submit, keyup changed delay:300ms from:#discover-q, change from:#discover-category, change from:#discover-language, change from:#discover-min-reliability, change from:#discover-sort">
       <div class="search-row">
         <input id="discover-q" type="text" name="q" value="{{ query }}" placeholder="Search MCP name, repo, or capability" data-testid="hub-discover-query">
         <select id="discover-category" name="category" data-testid="hub-discover-category">
           <option value="">All categories</option>
           {% for item in categories %}
             <option value="{{ item }}" {% if category == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+        <select id="discover-language" name="language" data-testid="hub-discover-language">
+          <option value="">All languages</option>
+          {% for item in languages %}
+            <option value="{{ item }}" {% if language == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+        <select id="discover-min-reliability" name="min_reliability" data-testid="hub-discover-min-reliability">
+          {% for item in reliability_options %}
+            <option value="{{ item }}" {% if min_reliability == item %}selected{% endif %}>
+              {% if item == 0 %}Any reliability{% else %}>={{ item }}% reliability{% endif %}
+            </option>
           {% endfor %}
         </select>
         <select id="discover-sort" name="sort" data-testid="hub-discover-sort">
@@ -27,20 +59,46 @@
     </form>
   </section>
 
-  <div class="panel-grid two" style="margin-bottom: 24px;">
+  <section class="compact-kpi-grid" style="margin-top: 24px;">
+    <article class="compact-kpi">
+      <span class="muted">Registry</span>
+      <strong>{{ overview.registry_count }}</strong>
+      <small>tracked MCP servers</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Active Instances</span>
+      <strong>{{ overview.active_instances }}</strong>
+      <small>community observed</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Runs Today</span>
+      <strong>{{ overview.runs_today }}</strong>
+      <small>telemetry events</small>
+    </article>
+    <article class="compact-kpi">
+      <span class="muted">Top Category</span>
+      <strong>{{ overview.top_category or "Unknown" }}</strong>
+      <small>{{ overview.unique_categories }} categories</small>
+    </article>
+  </section>
+
+  <div class="panel-grid two" style="margin-top: 24px;">
     <section class="panel">
-      <p class="eyebrow">Registry Overview</p>
-      <div class="meta-grid">
-        <div class="meta-pair"><strong>Registry entries</strong><span>{{ overview.registry_count }}</span></div>
-        <div class="meta-pair"><strong>Verified MCPs</strong><span>{{ overview.verified_count }}</span></div>
-        <div class="meta-pair"><strong>Active instances</strong><span>{{ overview.active_instances }}</span></div>
-        <div class="meta-pair"><strong>Runs today</strong><span>{{ overview.runs_today }}</span></div>
-      </div>
+      <p class="eyebrow">Trending MCP</p>
+      {% for item in overview.trending_mcps[:3] %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} active instances</div>
+          </div>
+          <a class="button secondary" href="/mcp/{{ item.slug }}">Open</a>
+        </div>
+      {% endfor %}
     </section>
-    <section class="panel" id="submit-mcp">
+    <section class="panel">
       <p class="eyebrow">Hub Writes</p>
       <h3 style="margin:0 0 8px;">Controlled submissions and moderation</h3>
-      <p class="muted" style="margin:0 0 14px;">Write paths are now protected behind a Hub admin login or an explicit admin API token for trusted service-to-service automation.</p>
+      <p class="muted" style="margin:0 0 14px;">Write paths are protected behind a Hub admin login or an explicit admin API token for trusted service-to-service automation.</p>
       <div class="topbar-actions" style="justify-content: flex-start;">
         {% if hub_admin %}
           <a class="button" href="/admin">Open Hub Admin</a>
@@ -49,42 +107,6 @@
         {% else %}
           <a class="button" href="/setup/admin">Create First Admin</a>
         {% endif %}
-      </div>
-    </section>
-  </div>
-
-  <div class="panel-grid two">
-    <section class="panel">
-      <p class="eyebrow">Top MCP Servers</p>
-      {% for item in overview.top_mcps[:3] %}
-        <div class="stat-line">
-          <div>
-            <strong>{{ item.name }}</strong>
-            <div class="muted">{{ item.active_instances }} active instances</div>
-          </div>
-          <span class="pill good">{{ "%.0f"|format(item.success_rate * 100) }}%</span>
-        </div>
-      {% endfor %}
-    </section>
-    <section class="panel">
-      <p class="eyebrow">How submissions work</p>
-      <div class="stat-line">
-        <div>
-          <strong>GitHub repositories only</strong>
-          <div class="muted">The first admin submission flow is intentionally limited to GitHub URLs.</div>
-        </div>
-      </div>
-      <div class="stat-line">
-        <div>
-          <strong>No secrets allowed</strong>
-          <div class="muted">API keys, bearer tokens, and similar strings are rejected before publication.</div>
-        </div>
-      </div>
-      <div class="stat-line">
-        <div>
-          <strong>Duplicates are merged</strong>
-          <div class="muted">If a repository is already known, the hub links you to the existing MCP detail page.</div>
-        </div>
       </div>
     </section>
   </div>

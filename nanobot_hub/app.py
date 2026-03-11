@@ -66,10 +66,18 @@ def create_app() -> FastAPI:
         *,
         q: str = "",
         category: str = "",
+        language: str = "",
+        min_reliability: int = 0,
         sort: str = "trending",
         status_code: int = 200,
     ) -> HTMLResponse:
-        items = store.list_mcps(search=q.strip(), category=category.strip(), sort=sort.strip())
+        items = store.list_mcps(
+            search=q.strip(),
+            category=category.strip(),
+            language=language.strip(),
+            min_reliability=min_reliability,
+            sort=sort.strip(),
+        )
         return _render(
             request,
             "discover.html",
@@ -78,8 +86,12 @@ def create_app() -> FastAPI:
                 "nav_active": "discover",
                 "query": q.strip(),
                 "category": category.strip(),
+                "language": language.strip(),
+                "min_reliability": max(0, min(100, int(min_reliability or 0))),
                 "sort": sort.strip() or "trending",
                 "categories": store.categories(),
+                "languages": store.languages(),
+                "reliability_options": [0, 80, 90, 95],
                 "items": items,
                 "overview": store.get_overview_stats(),
             },
@@ -209,6 +221,12 @@ def create_app() -> FastAPI:
         admin = _require_admin(request, auth_service)
         if admin is None:
             return RedirectResponse("/login", status_code=303)
+        mcp_queue = store.list_mcp_moderation_queue()
+        stack_queue = store.list_stack_moderation_queue()
+        showcase_queue = store.list_showcase_moderation_queue()
+        recent_submissions = store.list_recent_mcp_submissions()
+        error_hotspots = store.list_error_hotspots()
+        overview = store.get_overview_stats()
         return _render(
             request,
             "admin.html",
@@ -216,10 +234,21 @@ def create_app() -> FastAPI:
                 "title": "Hub Admin",
                 "nav_active": "admin",
                 "admin_user": admin,
-                "mcp_queue": store.list_mcp_moderation_queue(),
-                "stack_queue": store.list_stack_moderation_queue(),
-                "showcase_queue": store.list_showcase_moderation_queue(),
-                "recent_submissions": store.list_recent_mcp_submissions(),
+                "mcp_queue": mcp_queue,
+                "stack_queue": stack_queue,
+                "showcase_queue": showcase_queue,
+                "recent_submissions": recent_submissions,
+                "error_hotspots": error_hotspots,
+                "admin_overview": {
+                    "mcp_queue": len(mcp_queue),
+                    "stack_queue": len(stack_queue),
+                    "showcase_queue": len(showcase_queue),
+                    "recent_submissions": len(recent_submissions),
+                    "error_hotspots": len(error_hotspots),
+                    "registry_count": int(overview.get("registry_count", 0) or 0),
+                    "runs_today": int(overview.get("runs_today", 0) or 0),
+                    "telemetry_active": bool(overview.get("telemetry_active")),
+                },
                 "mcp_form": {
                     "repo_url": str(request.query_params.get("repo_url", "")).strip(),
                     "name": str(request.query_params.get("name", "")).strip(),
@@ -281,18 +310,35 @@ def create_app() -> FastAPI:
         request: Request,
         q: str = Query(""),
         category: str = Query(""),
+        language: str = Query(""),
+        min_reliability: int = Query(0),
         sort: str = Query("trending"),
     ) -> HTMLResponse:
-        return render_discover(request, q=q, category=category, sort=sort)
+        return render_discover(
+            request,
+            q=q,
+            category=category,
+            language=language,
+            min_reliability=min_reliability,
+            sort=sort,
+        )
 
     @app.get("/partials/discover-results", response_class=HTMLResponse)
     async def discover_results(
         request: Request,
         q: str = Query(""),
         category: str = Query(""),
+        language: str = Query(""),
+        min_reliability: int = Query(0),
         sort: str = Query("trending"),
     ) -> HTMLResponse:
-        items = store.list_mcps(search=q.strip(), category=category.strip(), sort=sort.strip())
+        items = store.list_mcps(
+            search=q.strip(),
+            category=category.strip(),
+            language=language.strip(),
+            min_reliability=min_reliability,
+            sort=sort.strip(),
+        )
         return _render(
             request,
             "partials/discover_results.html",
@@ -313,6 +359,7 @@ def create_app() -> FastAPI:
                 "title": item["name"],
                 "nav_active": "discover",
                 "item": item,
+                "fixes": store.get_mcp_fix_suggestions(slug),
             },
         )
 
@@ -501,13 +548,26 @@ def create_app() -> FastAPI:
     async def api_marketplace(
         q: str = Query(""),
         category: str = Query(""),
+        language: str = Query(""),
+        min_reliability: int = Query(0),
         sort: str = Query("trending"),
     ) -> dict[str, Any]:
         return {
-            "items": store.list_mcps(search=q.strip(), category=category.strip(), sort=sort.strip()),
+            "items": store.list_mcps(
+                search=q.strip(),
+                category=category.strip(),
+                language=language.strip(),
+                min_reliability=min_reliability,
+                sort=sort.strip(),
+            ),
             "query": q.strip(),
             "category": category.strip(),
+            "language": language.strip(),
+            "min_reliability": max(0, min(100, int(min_reliability or 0))),
             "sort": sort.strip() or "trending",
+            "categories": store.categories(),
+            "languages": store.languages(),
+            "reliability_options": [0, 80, 90, 95],
         }
 
     @app.get("/api/v1/marketplace/resolve")
@@ -549,9 +609,36 @@ def create_app() -> FastAPI:
             "items": store.list_showcase(search=q.strip(), category=category.strip()),
         }
 
+    @app.get("/api/v1/showcase/{slug}")
+    async def api_showcase_detail(slug: str) -> dict[str, Any]:
+        item = store.get_showcase(slug)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Showcase entry not found.")
+        return item
+
     @app.get("/api/v1/stats/overview")
     async def api_stats_overview() -> dict[str, Any]:
         return store.get_overview_stats()
+
+    @app.get("/api/v1/marketplace/{slug}/fixes")
+    async def api_marketplace_fixes(
+        slug: str,
+        error_code: str = Query(""),
+        current_transport: str = Query(""),
+        current_timeout: int = Query(0),
+        missing_runtimes: str = Query(""),
+    ) -> dict[str, Any]:
+        item = store.get_mcp(slug)
+        if item is None:
+            raise HTTPException(status_code=404, detail="MCP server not found.")
+        fixes = store.get_mcp_fix_suggestions(
+            slug,
+            error_code=error_code,
+            current_transport=current_transport,
+            current_timeout=current_timeout,
+            missing_runtimes=_split_csv(missing_runtimes),
+        )
+        return {"slug": slug, "fixes": fixes}
 
     @app.post("/api/v1/submissions/mcp")
     async def api_submit_mcp(request: Request) -> JSONResponse:

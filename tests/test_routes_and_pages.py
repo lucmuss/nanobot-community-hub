@@ -33,6 +33,7 @@ def test_setup_and_login_flow_renders_admin_page(client: TestClient) -> None:
     admin_page = client.get("/admin")
     assert admin_page.status_code == 200
     assert "Controlled write flows and simple moderation" in admin_page.text
+    assert "Current Error Hotspots" in admin_page.text
 
     logout = client.post("/logout", follow_redirects=False)
     assert logout.status_code == 303
@@ -56,12 +57,20 @@ def test_discover_page_renders_seeded_content(client: TestClient) -> None:
     assert "Context7" in body
     assert "Controlled submissions and moderation" in body
     assert "Create First Admin" in body
+    assert "All languages" in body
+    assert "Any reliability" in body
 
 
 def test_discover_partial_respects_filters(client: TestClient) -> None:
     response = client.get(
         "/partials/discover-results",
-        params={"q": "github", "category": "Coding", "sort": "reliable"},
+        params={
+            "q": "github",
+            "category": "Coding",
+            "language": "Remote",
+            "min_reliability": 80,
+            "sort": "reliable",
+        },
     )
     assert response.status_code == 200
     body = response.text
@@ -76,6 +85,7 @@ def test_mcp_detail_page_renders_tools_and_issues(client: TestClient) -> None:
     assert "Chrome DevTools MCP" in body
     assert "Known Issues" in body
     assert "open_page" in body
+    assert "Error Clusters" in body
 
 
 def test_stacks_pages_render_seeded_data(client: TestClient) -> None:

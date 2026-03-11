@@ -1,15 +1,55 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="panel hero-panel" style="margin-bottom:24px;">
-    <p class="eyebrow">Community Stats</p>
-    <h2 style="margin:0 0 8px;">Live registry and telemetry overview</h2>
-    <p class="muted" style="margin:0;">This page shows the first V1 community intelligence signals: registry size, active instances, daily runs, and the strongest MCP entries right now.</p>
+  <section class="page-header">
+    <div class="page-header-main">
+      <div class="page-header-copy">
+        <p class="eyebrow">Community Stats</p>
+        <h2>Live registry and telemetry overview</h2>
+        <p class="muted">Track the current network overview, trending MCPs, and the strongest reliability signals across the Nanobot community.</p>
+      </div>
+      <div class="page-header-actions">
+        <a class="button secondary" href="/discover">Open Marketplace</a>
+      </div>
+    </div>
+    <div class="page-meta-bar">
+      <span class="meta-chip"><strong>Top category</strong>{{ overview.top_category or "Unknown" }}</span>
+      <span class="meta-chip"><strong>Unique MCPs</strong>{{ overview.registry_count }}</span>
+      <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
+    </div>
   </section>
 
-  <div class="card-grid three">
-    <section class="card"><p class="eyebrow">Registry</p><strong style="font-size:1.8rem;">{{ overview.registry_count }}</strong><p class="muted">Tracked MCP servers</p></section>
-    <section class="card"><p class="eyebrow">Active Instances</p><strong style="font-size:1.8rem;">{{ overview.active_instances }}</strong><p class="muted">Across known community setups</p></section>
-    <section class="card"><p class="eyebrow">Runs Today</p><strong style="font-size:1.8rem;">{{ overview.runs_today }}</strong><p class="muted">Telemetry events received today</p></section>
+  <section class="compact-kpi-grid" style="margin-top:24px;">
+    <article class="compact-kpi"><span class="muted">Registry</span><strong>{{ overview.registry_count }}</strong><small>Tracked MCP servers</small></article>
+    <article class="compact-kpi"><span class="muted">Verified</span><strong>{{ overview.verified_count }}</strong><small>Verified entries</small></article>
+    <article class="compact-kpi"><span class="muted">Active Instances</span><strong>{{ overview.active_instances }}</strong><small>Community observed</small></article>
+    <article class="compact-kpi"><span class="muted">Runs Today</span><strong>{{ overview.runs_today }}</strong><small>Telemetry events</small></article>
+  </section>
+
+  <div class="panel-grid two" style="margin-top:24px;">
+    <section class="panel">
+      <p class="eyebrow">Trending MCP</p>
+      {% for item in overview.trending_mcps %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ loop.index }}. {{ item.name }}</strong>
+            <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} active instances</div>
+          </div>
+          <a class="button secondary" href="/mcp/{{ item.slug }}">Open</a>
+        </div>
+      {% endfor %}
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Most Reliable MCP</p>
+      {% for item in overview.most_reliable_mcps %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.reliability.label }} · {{ item.reliability.percent }}% · {{ item.avg_latency_ms }} ms</div>
+          </div>
+          <span class="pill {{ item.reliability.tone }}">{{ item.reliability.label }}</span>
+        </div>
+      {% endfor %}
+    </section>
   </div>
 
   <section class="panel" style="margin-top:24px;">
@@ -20,7 +60,7 @@
           <strong>{{ item.name }}</strong>
           <div class="muted">{{ item.active_instances }} active instances · {{ item.installs }} installs</div>
         </div>
-        <span class="pill good">{{ "%.0f"|format(item.success_rate * 100) }}%</span>
+        <span class="pill {{ item.reliability.tone }}">{{ item.reliability.percent }}%</span>
       </div>
     {% endfor %}
   </section>

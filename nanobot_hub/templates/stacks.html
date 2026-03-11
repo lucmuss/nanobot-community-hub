@@ -1,8 +1,15 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="panel" style="margin-bottom:24px;">
-    <p class="eyebrow">Stacks</p>
-    <h2 style="margin-top:0;">Import proven MCP combinations</h2>
+  <section class="page-header">
+    <div class="page-header-main">
+      <div class="page-header-copy">
+        <p class="eyebrow">Stacks</p>
+        <h2>Import proven MCP combinations</h2>
+        <p class="muted">Browse stack recipes for research, coding, and automation workflows.</p>
+      </div>
+    </div>
+  </section>
+  <section class="panel" style="margin-top:24px;">
     <form class="search-form" hx-get="/partials/stacks-results" hx-target="#stack-results" hx-trigger="submit, keyup changed delay:300ms from:#stacks-q">
       <div class="search-row" style="grid-template-columns:minmax(0,1fr) auto;">
         <input id="stacks-q" type="text" name="q" value="{{ query }}" placeholder="Search stack name or use case" data-testid="hub-stacks-query">
@@ -10,7 +17,7 @@
       </div>
     </form>
   </section>
-  <section id="stack-results">
+  <section id="stack-results" style="margin-top:24px;">
     {% include "partials/stacks_results.html" %}
   </section>
 {% endblock %}

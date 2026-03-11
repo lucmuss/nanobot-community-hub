@@ -7,13 +7,25 @@ AUTH_HEADERS = {"Authorization": "Bearer hub-test-api-token"}
 
 
 def test_marketplace_filters_and_sorting(client: TestClient) -> None:
-    response = client.get("/api/v1/marketplace", params={"category": "Research", "sort": "installed"})
+    response = client.get(
+        "/api/v1/marketplace",
+        params={
+            "category": "Research",
+            "language": "Remote",
+            "min_reliability": 90,
+            "sort": "installed",
+        },
+    )
     assert response.status_code == 200
     payload = response.json()
     items = payload["items"]
     assert items
     assert all(item["category"] == "Research" for item in items)
+    assert all(item["language"] == "Remote" for item in items)
+    assert all(item["reliability"]["percent"] >= 90 for item in items)
     assert items[0]["slug"] == "context7"
+    assert "Remote" in payload["languages"]
+    assert 95 in payload["reliability_options"]
 
 
 def test_marketplace_recommendation_and_showcase_api(client: TestClient) -> None:
@@ -26,6 +38,10 @@ def test_marketplace_recommendation_and_showcase_api(client: TestClient) -> None
     items = showcase.json()["items"]
     assert len(items) == 1
     assert items[0]["slug"] == "repository-review-pilot"
+
+    showcase_detail = client.get("/api/v1/showcase/repository-review-pilot")
+    assert showcase_detail.status_code == 200
+    assert showcase_detail.json()["stack"]["slug"] == "github-developer-stack"
 
 
 def test_repo_resolve_normalizes_git_urls(client: TestClient) -> None:
@@ -112,6 +128,63 @@ def test_telemetry_aggregation_updates_detail_and_overview(client: TestClient) -
     assert stats["runs_today"] == 3
     assert stats["telemetry_active"] is True
     assert stats["top_mcps"][0]["slug"] == "context7"
+
+
+def test_marketplace_fix_suggestions_endpoint_uses_recommendations_and_runtime_hints(client: TestClient) -> None:
+    response = client.get(
+        "/api/v1/marketplace/chrome-devtools-mcp/fixes",
+        params={
+            "error_code": "timeout",
+            "current_transport": "sse",
+            "current_timeout": 30,
+            "missing_runtimes": "node,npx",
+        },
+    )
+    assert response.status_code == 200
+    payload = response.json()
+    fixes = payload["fixes"]
+    assert any(item["id"] == "apply-recommended-config" for item in fixes)
+    assert any(item["id"] == "repair-install-node" for item in fixes)
+
+
+def test_marketplace_detail_includes_known_fix_and_error_cluster_data(client: TestClient) -> None:
+    telemetry = [
+        {
+            "mcp_slug": "chrome-devtools-mcp",
+            "version": "0.1.0",
+            "success": False,
+            "error_code": "timeout",
+            "latency_ms": 31000,
+            "transport": "sse",
+            "timeout_bucket": "0-30",
+            "retries": 1,
+            "instance_hash": "cluster-a",
+            "nanobot_version": "0.2.0",
+        },
+        {
+            "mcp_slug": "chrome-devtools-mcp",
+            "version": "0.1.0",
+            "success": False,
+            "error_code": "timeout",
+            "latency_ms": 30000,
+            "transport": "sse",
+            "timeout_bucket": "0-30",
+            "retries": 1,
+            "instance_hash": "cluster-b",
+            "nanobot_version": "0.2.0",
+        },
+    ]
+    for event in telemetry:
+        response = client.post("/api/v1/telemetry/events", json=event)
+        assert response.status_code == 202
+
+    detail = client.get("/api/v1/marketplace/chrome-devtools-mcp")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["error_clusters"]
+    assert payload["error_clusters"][0]["error_code"] == "timeout"
+    assert payload["known_fixes"]
+    assert "Increase timeout" in payload["known_fixes"][0]["title"]
 
 
 def test_submit_mcp_api_creates_new_registry_entry(client: TestClient) -> None:

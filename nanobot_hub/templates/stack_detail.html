@@ -1,19 +1,29 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="panel">
-    <p class="eyebrow">Stack</p>
-    <h2 style="margin-top:0;">{{ item.title }}</h2>
-    <p class="muted">{{ item.description }}</p>
-    <div class="meta-grid">
-      <div class="meta-pair"><strong>Use Case</strong><span>{{ item.use_case }}</span></div>
-      <div class="meta-pair"><strong>Recommended Model</strong><span>{{ item.recommended_model }}</span></div>
-      <div class="meta-pair"><strong>Imports</strong><span>{{ item.imports_count }}</span></div>
-      <div class="meta-pair"><strong>Rating</strong><span>{{ item.rating }}</span></div>
+  <section class="page-header">
+    <div class="page-header-main">
+      <div class="page-header-copy">
+        <p class="eyebrow">Stack</p>
+        <h2>{{ item.title }}</h2>
+        <p class="muted">{{ item.description }}</p>
+      </div>
+    </div>
+    <div class="page-meta-bar">
+      <span class="meta-chip"><strong>Use Case</strong>{{ item.use_case }}</span>
+      <span class="meta-chip"><strong>Model</strong>{{ item.recommended_model }}</span>
+      <span class="meta-chip"><strong>Imports</strong>{{ item.imports_count }}</span>
+      <span class="meta-chip {{ item.difficulty.tone }}"><strong>Difficulty</strong>{{ item.difficulty.label }}</span>
     </div>
   </section>
   <div class="panel-grid two" style="margin-top:24px;">
     <section class="panel">
       <p class="eyebrow">Included MCP Servers</p>
+      <div class="flow-diagram" style="margin-bottom: 16px;">
+        {% for entry in item["items"] %}
+          <span class="flow-node">{{ entry.name }}</span>
+          {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
+        {% endfor %}
+      </div>
       {% for entry in item["items"] %}
         <div class="stat-line">
           <span>{{ entry.name }}</span>
