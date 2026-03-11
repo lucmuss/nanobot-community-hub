@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block body %}
+  <section class="page-header" data-testid="hub-showcase-detail-page">
+    <div class="page-header-main">
+      <div class="page-header-copy">
+        <p class="eyebrow">Showcase Detail</p>
+        <h2>{{ item.title }}</h2>
+        <p class="muted">{{ item.description }}</p>
+      </div>
+      <div class="page-header-actions">
+        {% if item.stack %}
+          <a class="button secondary" href="/stacks/{{ item.stack.slug }}">Open Stack</a>
+          {% if local_gui_url %}
+            <a class="button secondary" href="{{ local_gui_url }}/community/stacks/{{ item.stack.slug }}">Open in local Nanobot</a>
+            <button class="secondary" type="button" onclick="copyHubValue('{{ local_gui_url }}/community/stacks/{{ item.stack.slug }}', this)">Copy import URL</button>
+          {% endif %}
+        {% endif %}
+      </div>
+    </div>
+    <div class="page-meta-bar">
+      <span class="meta-chip"><strong>Category</strong>{{ item.category }}</span>
+      <span class="meta-chip"><strong>Imports</strong>{{ item.imports_count }}</span>
+      {% if item.stack %}
+        <span class="meta-chip"><strong>Model</strong>{{ item.stack.recommended_model }}</span>
+      {% endif %}
+      <span class="meta-chip {{ item.stack_difficulty.tone }}"><strong>Difficulty</strong>{{ item.stack_difficulty.label }}</span>
+      {% if item.demo_ready %}
+        <span class="meta-chip good"><strong>Demo</strong>Ready to try in chat</span>
+      {% endif %}
+    </div>
+  </section>
+
+  <div class="panel-grid two" style="margin-top:24px;">
+    <section class="panel">
+      <p class="eyebrow">Use Case</p>
+      <p style="margin:0;">{{ item.use_case }}</p>
+      {% if item.best_for %}
+        <div class="tool-list" style="margin-top: 14px;">
+          {% for entry in item.best_for %}
+            <span class="tool-chip">{{ entry }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
+      <div class="meta-pair" style="margin-top:14px;">
+        <strong>Example Prompt</strong>
+        <span>{{ item.example_prompt }}</span>
+      </div>
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Stack Diagram</p>
+      <div class="flow-diagram">
+        {% for entry in item.diagram_nodes %}
+          {% if entry %}
+            <span class="flow-node">{{ entry }}</span>
+            {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
+          {% endif %}
+        {% endfor %}
+      </div>
+      {% if item.stack %}
+        <div class="meta-pair" style="margin-top:14px;">
+          <strong>Stack</strong>
+          <span>{{ item.stack.title }}</span>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <section class="panel" style="margin-top:24px;">
+    <p class="eyebrow">Included MCP Servers</p>
+    {% for entry in item.stack_items %}
+      <div class="stat-line">
+        <div>
+          <strong>{{ entry.name }}</strong>
+          <div class="muted">{{ entry.slug }}</div>
+        </div>
+        <a class="button secondary" href="/mcp/{{ entry.slug }}">Open</a>
+      </div>
+    {% endfor %}
+  </section>
+{% endblock %}

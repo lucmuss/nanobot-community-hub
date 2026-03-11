@@ -12,36 +12,52 @@
       <div class="page-meta-bar" style="margin-top: 10px;">
         <span class="meta-chip"><strong>Category</strong>{{ item.category }}</span>
         <span class="meta-chip"><strong>Language</strong>{{ item.language }}</span>
+        <span class="meta-chip {{ item.runtime_engine.tone }}"><strong>Runtime</strong>{{ item.runtime_engine.label }}</span>
         <span class="meta-chip"><strong>Install</strong>{{ item.install_method }}</span>
+        <span class="meta-chip {{ item.mcp_type.tone }}"><strong>Type</strong>{{ item.mcp_type.label }}</span>
         <span class="meta-chip {{ item.difficulty.tone }}"><strong>Difficulty</strong>{{ item.difficulty.label }}</span>
         {% if item.verified %}<span class="meta-chip good"><strong>Trust</strong>Verified</span>{% endif %}
       </div>
 
       <div class="panel-grid two" style="margin-top: 14px;">
         <div class="insight-panel community">
-          <strong>Community reliability</strong>
+          <strong>Trust signal</strong>
           <div class="reliability-stack" style="margin-top: 10px;">
             <div style="display:flex;justify-content:space-between;gap:12px;">
-              <span class="muted">{{ item.reliability.label }}</span>
-              <strong>{{ item.reliability.percent }}%</strong>
+              <span class="muted" title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully.">{{ item.reliability.label }}</span>
+              <strong title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully.">{{ item.reliability.percent }}%</strong>
             </div>
             <div class="reliability-bar">
               <div class="reliability-fill {{ item.reliability.tone }}" style="width: {{ item.reliability.bar_width }}%;"></div>
             </div>
           </div>
+          <div class="meta-grid" style="margin-top: 12px;">
+            <div class="meta-pair"><strong title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals.">Trust Score</strong><span title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals.">{{ item.trust_score.score }}/10</span></div>
+            <div class="meta-pair"><strong title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances.">Confidence</strong><span title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances.">{{ item.install_confidence.score }}/10</span></div>
+            <div class="meta-pair"><strong>Signals</strong><span>{{ item.install_confidence.based_on_instances }}</span></div>
+            <div class="meta-pair"><strong>Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+          </div>
         </div>
         <div class="insight-panel local">
-          <strong>Install preview</strong>
+          <strong>Runtime requirements</strong>
           <div class="muted" style="margin-top: 10px;">{{ item.dependencies|join(" · ") if item.dependencies else "No dependency hint" }}</div>
-          <div class="muted" style="margin-top: 6px;">{{ item.best_for|join(", ") if item.best_for else "General workflows" }}</div>
+          <div class="muted" style="margin-top: 6px;">Works well with {{ item.best_for|join(", ") if item.best_for else "general workflows" }}</div>
+          {% if item.permission_hints %}
+            <div class="muted" style="margin-top: 10px;"><strong>Security and permissions</strong></div>
+            <div class="tool-list" style="margin-top: 8px;">
+              {% for hint in item.permission_hints %}
+                <span class="tool-chip">{{ hint }}</span>
+              {% endfor %}
+            </div>
+          {% endif %}
         </div>
       </div>
 
       <div class="meta-grid" style="margin-top: 14px;">
         <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
-        <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
+        <div class="meta-pair"><strong>Installs</strong><span>{{ item.installs }}</span></div>
         <div class="meta-pair"><strong>Tools</strong><span>{{ item.tool_count }}</span></div>
-        <div class="meta-pair"><strong>Observed locally</strong><span>{{ item.recent_runs }} recent runs</span></div>
+        <div class="meta-pair"><strong>Usage trend</strong><span>{{ item.usage_trend.label }} · {{ item.usage_trend.runs_24h }} in 24h</span></div>
       </div>
 
       {% if item.known_fixes %}
@@ -63,6 +79,9 @@
         <div class="muted mono">{{ item.repo_url }}</div>
         <div style="display:flex;gap:8px;">
           <a class="button secondary" href="/mcp/{{ item.slug }}">View Details</a>
+          {% if local_gui_url %}
+            <a class="button secondary" href="{{ local_gui_url }}/community/mcp/{{ item.slug }}">Open in local Nanobot</a>
+          {% endif %}
         </div>
       </div>
     </article>

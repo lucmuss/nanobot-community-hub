@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="page-header">
+  <section class="page-header" data-testid="hub-mcp-detail-page">
     <div class="page-header-main">
       <div class="page-header-copy">
         <p class="eyebrow">Marketplace Detail</p>
@@ -9,7 +9,11 @@
       </div>
     </div>
     <div class="page-meta-bar">
-      <span class="meta-chip {{ item.reliability.tone }}"><strong>Reliability</strong>{{ item.reliability.label }} · {{ item.reliability.percent }}%</span>
+      <span class="meta-chip {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully."><strong>Reliability</strong>{{ item.reliability.label }} · {{ item.reliability.percent }}%</span>
+      <span class="meta-chip {{ item.trust_score.tone }}" title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals."><strong>Trust Score</strong>{{ item.trust_score.score }}/10</span>
+      <span class="meta-chip {{ item.install_confidence.tone }}" title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances."><strong>Confidence</strong>{{ item.install_confidence.score }}/10</span>
+      <span class="meta-chip {{ item.runtime_engine.tone }}"><strong>Runtime</strong>{{ item.runtime_engine.label }}</span>
+      <span class="meta-chip {{ item.mcp_type.tone }}"><strong>Type</strong>{{ item.mcp_type.label }}</span>
       <span class="meta-chip"><strong>Repository</strong>{{ item.repo_url }}</span>
       <span class="meta-chip"><strong>Install</strong>{{ item.install_method }}</span>
       <span class="meta-chip {{ item.difficulty.tone }}"><strong>Difficulty</strong>{{ item.difficulty.label }}</span>
@@ -32,7 +36,9 @@
         <div class="meta-pair"><strong>Active Instances</strong><span>{{ item.active_instances }}</span></div>
         <div class="meta-pair"><strong>Average Latency</strong><span>{{ item.avg_latency_ms }} ms</span></div>
         <div class="meta-pair"><strong>Recent Telemetry Runs</strong><span>{{ item.recent_runs }}</span></div>
-        <div class="meta-pair"><strong>Best used with</strong><span>{{ item.best_for|join(", ") if item.best_for else "General workflows" }}</span></div>
+        <div class="meta-pair"><strong>Works well with</strong><span>{{ item.best_for|join(", ") if item.best_for else "General workflows" }}</span></div>
+        <div class="meta-pair"><strong>Runs in 24h</strong><span>{{ item.usage_trend.runs_24h }}</span></div>
+        <div class="meta-pair"><strong>Runs in 7d</strong><span>{{ item.usage_trend.runs_7d }}</span></div>
       </div>
     </section>
     <section class="panel">
@@ -44,15 +50,31 @@
             <div class="meta-pair"><strong>Timeout</strong><span>{{ item.recommended_config.timeout }} seconds</span></div>
             <div class="meta-pair"><strong>Retries</strong><span>{{ item.recommended_config.retries }}</span></div>
             <div class="meta-pair"><strong>Evidence</strong><span>{{ item.recommended_config.based_on_instances }} instances</span></div>
+            <div class="meta-pair"><strong>Confidence</strong><span>{{ (item.recommended_config.confidence_score * 10)|round(1) }}/10</span></div>
+            <div class="meta-pair"><strong>Trend</strong><span>{{ item.usage_trend.label }}</span></div>
           </div>
         </div>
       {% else %}
         <p class="muted">No community recommendation is available yet.</p>
       {% endif %}
       <div class="insight-panel local" style="margin-top: 14px;">
-        <strong>Dependencies</strong>
+        <strong>Runtime requirements</strong>
         <div class="muted" style="margin-top: 10px;">{{ item.dependencies|join(" · ") if item.dependencies else "No dependency hint" }}</div>
+        {% if item.permission_hints %}
+          <div class="muted" style="margin-top: 12px;"><strong>Security and permissions</strong></div>
+          <div class="tool-list" style="margin-top: 8px;">
+            {% for hint in item.permission_hints %}
+              <span class="tool-chip">{{ hint }}</span>
+            {% endfor %}
+          </div>
+        {% endif %}
       </div>
+      {% if local_gui_url %}
+        <div class="topbar-actions" style="justify-content:flex-start; margin-top: 14px;">
+          <a class="button secondary" href="{{ local_gui_url }}/community/mcp/{{ item.slug }}">Open in local Nanobot</a>
+          <button class="secondary" type="button" onclick="copyHubValue('{{ local_gui_url }}/community/mcp/{{ item.slug }}', this)">Copy import URL</button>
+        </div>
+      {% endif %}
     </section>
   </div>
 
@@ -77,7 +99,7 @@
 
   <div class="panel-grid two" style="margin-top:24px;">
     <section class="panel">
-      <p class="eyebrow">Suggested Fixes</p>
+      <p class="eyebrow">Self-Healing Insights</p>
       {% for fix in fixes %}
         <div class="stat-line">
           <div>
@@ -93,7 +115,7 @@
       {% endfor %}
     </section>
     <section class="panel">
-      <p class="eyebrow">Error Clusters</p>
+      <p class="eyebrow">Most Common Failures</p>
       {% for cluster in item.error_clusters %}
         <div class="stat-line">
           <div>
@@ -105,6 +127,42 @@
       {% else %}
         <p class="muted">No clustered failure patterns are available yet.</p>
       {% endfor %}
+    </section>
+  </div>
+
+  <div class="panel-grid two" style="margin-top:24px;">
+    <section class="panel">
+      <p class="eyebrow">Common Combinations</p>
+      {% for combo in item.common_combinations %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ combo.name }}</strong>
+            <div class="muted">
+              Seen in {{ combo.stack_count }} published stack{% if combo.stack_count != 1 %}s{% endif %}
+              {% if combo.telemetry_instances %} · {{ combo.telemetry_instances }} shared instance{% if combo.telemetry_instances != 1 %}s{% endif %}{% endif %}
+            </div>
+          </div>
+          <div style="display:flex; gap:8px; align-items:center;">
+            <span class="pill">{{ combo.strength_score }}/10</span>
+            <a class="button secondary" href="/mcp/{{ combo.slug }}">Open</a>
+          </div>
+        </div>
+      {% else %}
+        <p class="muted">No public stack combinations are available yet.</p>
+      {% endfor %}
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Trust Breakdown</p>
+      <div class="meta-grid">
+        <div class="meta-pair"><strong>Trust Score</strong><span>{{ item.trust_score.score }}/10 · {{ item.trust_score.label }}</span></div>
+        <div class="meta-pair"><strong>Confidence</strong><span>{{ item.install_confidence.score }}/10</span></div>
+        <div class="meta-pair"><strong>Reliability</strong><span>{{ item.reliability.percent }}%</span></div>
+        <div class="meta-pair"><strong>Signals</strong><span>{{ item.install_confidence.based_on_instances }}</span></div>
+        <div class="meta-pair"><strong>30d runs</strong><span>{{ item.install_confidence.runs_30d }}</span></div>
+        <div class="meta-pair"><strong>30d instances</strong><span>{{ item.install_confidence.instances_30d }}</span></div>
+        <div class="meta-pair"><strong>Config consensus</strong><span>{{ (item.trust_score.config_consensus * 100)|round(1) }}%</span></div>
+        <div class="meta-pair"><strong>Repair rate</strong><span>{{ (item.trust_score.repair_rate * 100)|round(1) }}%</span></div>
+      </div>
     </section>
   </div>
 {% endblock %}

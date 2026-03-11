@@ -6,6 +6,81 @@
     <title>{{ title }} | {{ instance_name }}</title>
     <script src="https://unpkg.com/htmx.org@1.9.12"></script>
     <link rel="stylesheet" href="/static/styles.css">
+    <script>
+      function copyHubValue(value, button) {
+        if (!value || !navigator.clipboard) {
+          return;
+        }
+        const original = button.textContent;
+        navigator.clipboard.writeText(value).then(() => {
+          button.textContent = "Copied";
+          window.setTimeout(() => {
+            button.textContent = original;
+          }, 1200);
+        });
+      }
+
+      function initHubMobileMenu() {
+        const drawer = document.querySelector('[data-mobile-drawer]');
+        const overlay = document.querySelector('[data-mobile-overlay]');
+        const toggles = Array.from(document.querySelectorAll('[data-mobile-menu-toggle]'));
+        const closers = Array.from(document.querySelectorAll('[data-mobile-menu-close]'));
+        if (!drawer || !overlay || !toggles.length) {
+          return;
+        }
+
+        function setOpen(open) {
+          document.body.classList.toggle('mobile-menu-open', open);
+          drawer.setAttribute('aria-hidden', open ? 'false' : 'true');
+          overlay.hidden = !open;
+          toggles.forEach((toggle) => {
+            toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+          });
+          if (open) {
+            const firstInteractive = drawer.querySelector('a, button');
+            if (firstInteractive) {
+              firstInteractive.focus();
+            }
+          }
+        }
+
+        toggles.forEach((toggle) => {
+          toggle.addEventListener('click', function () {
+            setOpen(drawer.getAttribute('aria-hidden') === 'true');
+          });
+        });
+
+        closers.forEach((closer) => {
+          closer.addEventListener('click', function () {
+            setOpen(false);
+          });
+        });
+
+        overlay.addEventListener('click', function () {
+          setOpen(false);
+        });
+
+        drawer.querySelectorAll('a').forEach((link) => {
+          link.addEventListener('click', function () {
+            setOpen(false);
+          });
+        });
+
+        window.addEventListener('keydown', function (event) {
+          if (event.key === 'Escape') {
+            setOpen(false);
+          }
+        });
+
+        window.matchMedia('(min-width: 901px)').addEventListener('change', function (event) {
+          if (event.matches) {
+            setOpen(false);
+          }
+        });
+      }
+
+      document.addEventListener('DOMContentLoaded', initHubMobileMenu);
+    </script>
   </head>
   <body>
     {% if flash.message %}
@@ -16,7 +91,8 @@
         <div class="content-inner">
     {% else %}
       <div class="app-shell">
-        <aside class="sidebar">
+        <div class="mobile-overlay" data-mobile-overlay hidden></div>
+        <aside class="sidebar desktop-sidebar">
           <div class="brand">
             <p class="eyebrow">Nanobot Hub</p>
             <strong>{{ instance_name }}</strong>
@@ -44,8 +120,116 @@
             {% endif %}
           </div>
         </aside>
+        <aside
+          class="mobile-drawer"
+          id="hub-mobile-drawer"
+          data-mobile-drawer
+          data-testid="hub-mobile-drawer"
+          aria-hidden="true"
+        >
+          <div class="mobile-drawer-header">
+            <div class="brand">
+              <p class="eyebrow">Nanobot Hub</p>
+              <strong>{{ instance_name }}</strong>
+              <p class="muted">Community-powered MCP intelligence</p>
+            </div>
+            <button
+              type="button"
+              class="icon-button"
+              data-mobile-menu-close
+              data-testid="hub-mobile-menu-close"
+              aria-label="Close navigation"
+            >
+              ×
+            </button>
+          </div>
+          <div class="mobile-drawer-scroll">
+            <section class="drawer-section">
+              <p class="drawer-label">Community</p>
+              <nav class="nav drawer-nav">
+                <a href="/discover" class="{% if nav_active == 'discover' %}active{% endif %}">Discover MCP</a>
+                <a href="/stacks" class="{% if nav_active == 'stacks' %}active{% endif %}">MCP Stacks</a>
+                <a href="/showcase" class="{% if nav_active == 'showcase' %}active{% endif %}">Showcase</a>
+                <a href="/community-stats" class="{% if nav_active == 'stats' %}active{% endif %}">Community Stats</a>
+              </nav>
+            </section>
+
+            <section class="drawer-section">
+              <p class="drawer-label">Admin</p>
+              <nav class="nav drawer-nav">
+                {% if hub_admin %}
+                  <a href="/admin" class="{% if nav_active == 'admin' %}active{% endif %}">Admin Dashboard</a>
+                  <a href="/admin#publish-mcp">Publish MCP</a>
+                  <a href="/admin#publish-stack">Publish Stack</a>
+                  <a href="/admin#publish-showcase">Publish Showcase</a>
+                  <a href="/admin#review-queue">Review Queue</a>
+                {% elif has_hub_admin %}
+                  <a href="/login">Admin Login</a>
+                {% else %}
+                  <a href="/setup/admin">Create Admin</a>
+                {% endif %}
+              </nav>
+            </section>
+
+            <section class="drawer-section">
+              <p class="drawer-label">System</p>
+              <div class="sidebar-meta drawer-meta">
+                <div class="sidebar-meta-row">
+                  <span>Version</span>
+                  <strong>{{ current_version }}</strong>
+                </div>
+                {% if public_url %}
+                  <div class="sidebar-meta-row">
+                    <span>Public URL</span>
+                    <strong>{{ public_url }}</strong>
+                  </div>
+                {% endif %}
+              </div>
+            </section>
+
+            <section class="drawer-section">
+              <p class="drawer-label">Account</p>
+              <div class="drawer-account">
+                {% if hub_admin %}
+                  <a class="button secondary" href="/admin">Open Admin</a>
+                  <form method="post" action="/logout">
+                    <button class="secondary" type="submit">Logout</button>
+                  </form>
+                {% elif has_hub_admin %}
+                  <a class="button secondary" href="/login">Admin Login</a>
+                {% else %}
+                  <a class="button secondary" href="/setup/admin">Create Admin</a>
+                {% endif %}
+              </div>
+            </section>
+          </div>
+        </aside>
         <main class="content">
           <div class="content-inner">
+            <div class="mobile-topbar" data-testid="hub-mobile-topbar">
+              <button
+                type="button"
+                class="icon-button"
+                data-mobile-menu-toggle
+                data-testid="hub-mobile-menu-toggle"
+                aria-controls="hub-mobile-drawer"
+                aria-expanded="false"
+                aria-label="Open navigation"
+              >
+                ☰
+              </button>
+              <div class="mobile-topbar-copy">
+                <strong>{{ title }}</strong>
+                <span>{{ instance_name }}</span>
+              </div>
+              {% if hub_admin %}
+                <a class="mobile-topbar-link" href="/admin">Admin</a>
+              {% elif has_hub_admin %}
+                <a class="mobile-topbar-link" href="/login">Login</a>
+              {% else %}
+                <a class="mobile-topbar-link" href="/setup/admin">Setup</a>
+              {% endif %}
+            </div>
             <div class="topbar">
               <div>
                 <p class="eyebrow">Nanobot Ecosystem</p>

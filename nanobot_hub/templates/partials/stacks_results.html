@@ -14,17 +14,27 @@
         <span class="meta-chip"><strong>Model</strong>{{ item.recommended_model }}</span>
         <span class="meta-chip {{ item.difficulty.tone }}"><strong>Difficulty</strong>{{ item.difficulty.label }}</span>
       </div>
+      {% if item.best_for %}
+        <div class="tool-list" style="margin-top: 12px;">
+          {% for entry in item.best_for %}
+            <span class="tool-chip">{{ entry }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
       <div class="insight-panel community" style="margin-top: 14px;">
         <strong>Stack diagram</strong>
         <div class="flow-diagram" style="margin-top: 12px;">
-          {% for entry in item["items"] %}
-            <span class="flow-node">{{ entry.name }}</span>
+          {% for entry in item.diagram_nodes %}
+            <span class="flow-node">{{ entry }}</span>
             {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
           {% endfor %}
         </div>
       </div>
-      <div style="display:flex;justify-content:flex-end;margin-top:14px;">
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap;">
         <a class="button secondary" href="/stacks/{{ item.slug }}">View Stack</a>
+        {% if local_gui_url %}
+          <a class="button secondary" href="{{ local_gui_url }}/community/stacks/{{ item.slug }}">Open in local Nanobot</a>
+        {% endif %}
       </div>
     </article>
   {% else %}

@@ -67,14 +67,17 @@ def create_app() -> FastAPI:
         q: str = "",
         category: str = "",
         language: str = "",
+        runtime: str = "",
         min_reliability: int = 0,
         sort: str = "trending",
         status_code: int = 200,
     ) -> HTMLResponse:
+        runtime_settings = store.get_runtime_settings()
         items = store.list_mcps(
             search=q.strip(),
             category=category.strip(),
             language=language.strip(),
+            runtime=runtime.strip(),
             min_reliability=min_reliability,
             sort=sort.strip(),
         )
@@ -87,13 +90,16 @@ def create_app() -> FastAPI:
                 "query": q.strip(),
                 "category": category.strip(),
                 "language": language.strip(),
+                "runtime": runtime.strip(),
                 "min_reliability": max(0, min(100, int(min_reliability or 0))),
                 "sort": sort.strip() or "trending",
                 "categories": store.categories(),
                 "languages": store.languages(),
+                "runtime_options": store.runtime_options(),
                 "reliability_options": [0, 80, 90, 95],
                 "items": items,
                 "overview": store.get_overview_stats(),
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
             status_code=status_code,
         )
@@ -106,6 +112,7 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     async def health() -> dict[str, Any]:
+        runtime_settings = store.get_runtime_settings()
         return {
             "ok": True,
             "service": settings.instance_name,
@@ -114,6 +121,7 @@ def create_app() -> FastAPI:
             "database_backend": store.backend,
             "has_admin": auth_service.has_admin(),
             "admin_write_api": bool(settings.api_token),
+            "runtime_settings": runtime_settings,
         }
 
     @app.get("/setup/admin", response_class=HTMLResponse)
@@ -227,6 +235,7 @@ def create_app() -> FastAPI:
         recent_submissions = store.list_recent_mcp_submissions()
         error_hotspots = store.list_error_hotspots()
         overview = store.get_overview_stats()
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "admin.html",
@@ -249,6 +258,16 @@ def create_app() -> FastAPI:
                     "runs_today": int(overview.get("runs_today", 0) or 0),
                     "telemetry_active": bool(overview.get("telemetry_active")),
                 },
+                "ops_info": {
+                    "instance_name": settings.instance_name,
+                    "public_url": settings.public_url,
+                    "database_backend": store.backend,
+                    "api_write_enabled": bool(settings.api_token),
+                    "has_admin": auth_service.has_admin(),
+                    "network_health": overview.get("network_health", {}),
+                    "top_category": overview.get("top_category", ""),
+                },
+                "runtime_settings": runtime_settings,
                 "mcp_form": {
                     "repo_url": str(request.query_params.get("repo_url", "")).strip(),
                     "name": str(request.query_params.get("name", "")).strip(),
@@ -305,12 +324,37 @@ def create_app() -> FastAPI:
         )
         return RedirectResponse("/admin", status_code=303)
 
+    @app.post("/admin/settings")
+    async def admin_update_settings(request: Request) -> RedirectResponse:
+        admin = _require_admin(request, auth_service)
+        if admin is None:
+            return RedirectResponse("/login", status_code=303)
+        form = await request.form()
+        payload = {
+            "telemetry_ingest_enabled": bool(form.get("telemetry_ingest_enabled")),
+            "api_token_writes_enabled": bool(form.get("api_token_writes_enabled")),
+            "recommendation_mode": str(form.get("recommendation_mode", "balanced")).strip(),
+            "featured_min_trust_score": str(form.get("featured_min_trust_score", "7.5")).strip(),
+            "featured_min_signal_count": str(form.get("featured_min_signal_count", "3")).strip(),
+            "discover_cache_ttl_seconds": str(form.get("discover_cache_ttl_seconds", "20")).strip(),
+            "overview_cache_ttl_seconds": str(form.get("overview_cache_ttl_seconds", "30")).strip(),
+            "default_gui_url": str(form.get("default_gui_url", "")).strip(),
+        }
+        try:
+            store.update_runtime_settings(payload)
+        except (TypeError, ValueError) as exc:
+            _set_flash(request, f"Settings update failed: {exc}", level="error")
+            return RedirectResponse("/admin", status_code=303)
+        _set_flash(request, "Hub runtime settings saved.")
+        return RedirectResponse("/admin", status_code=303)
+
     @app.get("/discover", response_class=HTMLResponse)
     async def discover_page(
         request: Request,
         q: str = Query(""),
         category: str = Query(""),
         language: str = Query(""),
+        runtime: str = Query(""),
         min_reliability: int = Query(0),
         sort: str = Query("trending"),
     ) -> HTMLResponse:
@@ -319,6 +363,7 @@ def create_app() -> FastAPI:
             q=q,
             category=category,
             language=language,
+            runtime=runtime,
             min_reliability=min_reliability,
             sort=sort,
         )
@@ -329,6 +374,7 @@ def create_app() -> FastAPI:
         q: str = Query(""),
         category: str = Query(""),
         language: str = Query(""),
+        runtime: str = Query(""),
         min_reliability: int = Query(0),
         sort: str = Query("trending"),
     ) -> HTMLResponse:
@@ -336,14 +382,17 @@ def create_app() -> FastAPI:
             search=q.strip(),
             category=category.strip(),
             language=language.strip(),
+            runtime=runtime.strip(),
             min_reliability=min_reliability,
             sort=sort.strip(),
         )
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "partials/discover_results.html",
             {
                 "items": items,
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
@@ -352,6 +401,7 @@ def create_app() -> FastAPI:
         item = store.get_mcp(slug)
         if item is None:
             raise HTTPException(status_code=404, detail="MCP server not found.")
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "mcp_detail.html",
@@ -360,12 +410,14 @@ def create_app() -> FastAPI:
                 "nav_active": "discover",
                 "item": item,
                 "fixes": store.get_mcp_fix_suggestions(slug),
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
     @app.get("/stacks", response_class=HTMLResponse)
     async def stacks_page(request: Request, q: str = Query("")) -> HTMLResponse:
         items = store.list_stacks(search=q.strip())
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "stacks.html",
@@ -374,16 +426,19 @@ def create_app() -> FastAPI:
                 "nav_active": "stacks",
                 "query": q.strip(),
                 "items": items,
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
     @app.get("/partials/stacks-results", response_class=HTMLResponse)
     async def stack_results(request: Request, q: str = Query("")) -> HTMLResponse:
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "partials/stacks_results.html",
             {
                 "items": store.list_stacks(search=q.strip()),
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
@@ -392,6 +447,7 @@ def create_app() -> FastAPI:
         item = store.get_stack(slug)
         if item is None:
             raise HTTPException(status_code=404, detail="Stack not found.")
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "stack_detail.html",
@@ -399,6 +455,7 @@ def create_app() -> FastAPI:
                 "title": item["title"],
                 "nav_active": "stacks",
                 "item": item,
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
@@ -408,6 +465,7 @@ def create_app() -> FastAPI:
         q: str = Query(""),
         category: str = Query(""),
     ) -> HTMLResponse:
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "showcase.html",
@@ -418,6 +476,7 @@ def create_app() -> FastAPI:
                 "category": category.strip(),
                 "categories": store.showcase_categories(),
                 "items": store.list_showcase(search=q.strip(), category=category.strip()),
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
@@ -427,16 +486,36 @@ def create_app() -> FastAPI:
         q: str = Query(""),
         category: str = Query(""),
     ) -> HTMLResponse:
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "partials/showcase_results.html",
             {
                 "items": store.list_showcase(search=q.strip(), category=category.strip()),
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
+            },
+        )
+
+    @app.get("/showcase/{slug}", response_class=HTMLResponse)
+    async def showcase_detail_page(request: Request, slug: str) -> HTMLResponse:
+        item = store.get_showcase(slug)
+        if item is None:
+            raise HTTPException(status_code=404, detail="Showcase entry not found.")
+        runtime_settings = store.get_runtime_settings()
+        return _render(
+            request,
+            "showcase_detail.html",
+            {
+                "title": item["title"],
+                "nav_active": "showcase",
+                "item": item,
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
     @app.get("/community-stats", response_class=HTMLResponse)
     async def community_stats_page(request: Request) -> HTMLResponse:
+        runtime_settings = store.get_runtime_settings()
         return _render(
             request,
             "community_stats.html",
@@ -444,6 +523,7 @@ def create_app() -> FastAPI:
                 "title": "Community Stats",
                 "nav_active": "stats",
                 "overview": store.get_overview_stats(),
+                "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
 
@@ -549,6 +629,7 @@ def create_app() -> FastAPI:
         q: str = Query(""),
         category: str = Query(""),
         language: str = Query(""),
+        runtime: str = Query(""),
         min_reliability: int = Query(0),
         sort: str = Query("trending"),
     ) -> dict[str, Any]:
@@ -557,16 +638,19 @@ def create_app() -> FastAPI:
                 search=q.strip(),
                 category=category.strip(),
                 language=language.strip(),
+                runtime=runtime.strip(),
                 min_reliability=min_reliability,
                 sort=sort.strip(),
             ),
             "query": q.strip(),
             "category": category.strip(),
             "language": language.strip(),
+            "runtime": runtime.strip(),
             "min_reliability": max(0, min(100, int(min_reliability or 0))),
             "sort": sort.strip() or "trending",
             "categories": store.categories(),
             "languages": store.languages(),
+            "runtime_options": store.runtime_options(),
             "reliability_options": [0, 80, 90, 95],
         }
 
@@ -642,7 +726,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/submissions/mcp")
     async def api_submit_mcp(request: Request) -> JSONResponse:
-        _require_write_access(request, auth_service, settings)
+        _require_write_access(request, auth_service, settings, store)
         payload = await request.json()
         try:
             result = store.submit_mcp_submission(payload)
@@ -652,7 +736,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/submissions/stack")
     async def api_submit_stack(request: Request) -> JSONResponse:
-        _require_write_access(request, auth_service, settings)
+        _require_write_access(request, auth_service, settings, store)
         payload = await request.json()
         try:
             result = store.create_stack_submission(payload)
@@ -662,7 +746,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/submissions/showcase")
     async def api_submit_showcase(request: Request) -> JSONResponse:
-        _require_write_access(request, auth_service, settings)
+        _require_write_access(request, auth_service, settings, store)
         payload = await request.json()
         try:
             result = store.create_showcase_submission(payload)
@@ -696,6 +780,9 @@ def create_app() -> FastAPI:
 
     @app.post("/api/v1/telemetry/events")
     async def api_telemetry_event(request: Request) -> JSONResponse:
+        runtime_settings = store.get_runtime_settings()
+        if not bool(runtime_settings.get("telemetry_ingest_enabled", True)):
+            raise HTTPException(status_code=403, detail="Telemetry ingest is disabled by hub settings.")
         payload = await request.json()
         try:
             event = store.record_telemetry_event(payload)
@@ -761,9 +848,12 @@ def _get_flash(request: Request) -> dict[str, str]:
     return {"message": message, "level": level}
 
 
-def _require_write_access(request: Request, auth_service: HubAuthService, settings: HubSettings) -> None:
+def _require_write_access(request: Request, auth_service: HubAuthService, settings: HubSettings, store: HubStore) -> None:
     if _current_admin(request, auth_service) is not None:
         return
+    runtime_settings = store.get_runtime_settings()
+    if not bool(runtime_settings.get("api_token_writes_enabled", True)):
+        raise HTTPException(status_code=403, detail="Service-to-service writes are disabled by hub settings.")
     token = _extract_api_token(request)
     if settings.api_token and token and hmac.compare_digest(token, settings.api_token):
         return

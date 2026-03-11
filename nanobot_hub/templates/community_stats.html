@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="page-header">
+  <section class="page-header" data-testid="hub-community-stats-page">
     <div class="page-header-main">
       <div class="page-header-copy">
         <p class="eyebrow">Community Stats</p>
@@ -12,6 +12,7 @@
       </div>
     </div>
     <div class="page-meta-bar">
+      <span class="meta-chip {{ overview.network_health.tone }}" title="{{ overview.network_health.summary }}"><strong>Network Health</strong>{{ overview.network_health.score }} · {{ overview.network_health.label }}</span>
       <span class="meta-chip"><strong>Top category</strong>{{ overview.top_category or "Unknown" }}</span>
       <span class="meta-chip"><strong>Unique MCPs</strong>{{ overview.registry_count }}</span>
       <span class="meta-chip {% if overview.telemetry_active %}good{% else %}warn{% endif %}"><strong>Telemetry</strong>{{ "Active" if overview.telemetry_active else "Seed only" }}</span>
@@ -23,9 +24,12 @@
     <article class="compact-kpi"><span class="muted">Verified</span><strong>{{ overview.verified_count }}</strong><small>Verified entries</small></article>
     <article class="compact-kpi"><span class="muted">Active Instances</span><strong>{{ overview.active_instances }}</strong><small>Community observed</small></article>
     <article class="compact-kpi"><span class="muted">Runs Today</span><strong>{{ overview.runs_today }}</strong><small>Telemetry events</small></article>
+    <article class="compact-kpi"><span class="muted">Network Health</span><strong>{{ overview.network_health.score }}</strong><small title="{{ overview.network_health.summary }}">{{ overview.network_health.label }} · {{ overview.network_health.summary }}</small></article>
+    <article class="compact-kpi"><span class="muted">Avg Success</span><strong>{{ (overview.average_success_rate * 100)|round(1) }}%</strong><small>network health</small></article>
+    <article class="compact-kpi"><span class="muted">Avg Latency</span><strong>{{ overview.average_latency_ms }} ms</strong><small>across tracked MCPs</small></article>
   </section>
 
-  <div class="panel-grid two" style="margin-top:24px;">
+  <div class="panel-grid three" style="margin-top:24px;">
     <section class="panel">
       <p class="eyebrow">Trending MCP</p>
       {% for item in overview.trending_mcps %}
@@ -33,6 +37,23 @@
           <div>
             <strong>{{ loop.index }}. {{ item.name }}</strong>
             <div class="muted">{{ item.recent_runs }} recent runs · {{ item.active_instances }} active instances</div>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <a class="button secondary" href="/mcp/{{ item.slug }}">Open</a>
+            {% if local_gui_url %}
+              <a class="button secondary" href="{{ local_gui_url }}/community/mcp/{{ item.slug }}">Open in local Nanobot</a>
+            {% endif %}
+          </div>
+        </div>
+      {% endfor %}
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Fastest Growing</p>
+      {% for item in overview.fastest_growing_mcps %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.usage_trend.runs_24h }} runs in 24h · {{ item.usage_trend.runs_7d }} runs in 7d</div>
           </div>
           <a class="button secondary" href="/mcp/{{ item.slug }}">Open</a>
         </div>
@@ -46,8 +67,45 @@
             <strong>{{ item.name }}</strong>
             <div class="muted">{{ item.reliability.label }} · {{ item.reliability.percent }}% · {{ item.avg_latency_ms }} ms</div>
           </div>
-          <span class="pill {{ item.reliability.tone }}">{{ item.reliability.label }}</span>
+          <span class="pill {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs.">{{ item.reliability.label }}</span>
         </div>
+      {% endfor %}
+    </section>
+  </div>
+
+  <div class="panel-grid two" style="margin-top:24px;">
+    <section class="panel">
+      <p class="eyebrow">Most Installed MCP</p>
+      {% for item in overview.most_installed_mcps %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.name }}</strong>
+            <div class="muted">{{ item.installs }} installs · {{ item.active_instances }} active instances</div>
+          </div>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span class="pill {{ item.trust_score.tone }}" title="Trust Score combines reliability, install evidence, latency, and verification status.">{{ item.trust_score.score }}/10</span>
+          {% if local_gui_url %}
+            <a class="button secondary" href="{{ local_gui_url }}/community/mcp/{{ item.slug }}">Open in local Nanobot</a>
+          {% endif %}
+        </div>
+        </div>
+      {% endfor %}
+    </section>
+    <section class="panel">
+      <p class="eyebrow">Common Combinations</p>
+      {% for item in overview.common_combinations %}
+        <div class="stat-line">
+          <div>
+            <strong>{{ item.label }}</strong>
+            <div class="muted">
+              Seen in {{ item.stack_count }} public stack{% if item.stack_count != 1 %}s{% endif %}
+              {% if item.telemetry_instances %} · {{ item.telemetry_instances }} shared instance{% if item.telemetry_instances != 1 %}s{% endif %}{% endif %}
+            </div>
+          </div>
+          <span class="pill">{{ item.strength_score }}/10</span>
+        </div>
+      {% else %}
+        <p class="muted">Not enough public stacks yet to infer combinations.</p>
       {% endfor %}
     </section>
   </div>
@@ -60,8 +118,27 @@
           <strong>{{ item.name }}</strong>
           <div class="muted">{{ item.active_instances }} active instances · {{ item.installs }} installs</div>
         </div>
-        <span class="pill {{ item.reliability.tone }}">{{ item.reliability.percent }}%</span>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <span class="pill {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs.">{{ item.reliability.percent }}%</span>
+          {% if local_gui_url %}
+            <a class="button secondary" href="{{ local_gui_url }}/community/mcp/{{ item.slug }}">Open in local Nanobot</a>
+          {% endif %}
+        </div>
       </div>
+    {% endfor %}
+  </section>
+
+  <section class="panel" style="margin-top:24px;">
+    <p class="eyebrow">Top Categories</p>
+    {% for item in overview.top_categories %}
+      <div class="stat-line">
+        <div>
+          <strong>{{ item.name }}</strong>
+          <div class="muted">{{ item.count }} MCPs in this category</div>
+        </div>
+      </div>
+    {% else %}
+      <p class="muted">No category signals are available yet.</p>
     {% endfor %}
   </section>
 {% endblock %}

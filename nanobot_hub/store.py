@@ -4,16 +4,21 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
+from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from itertools import combinations
 from pathlib import Path
+from time import monotonic
 from typing import Any
 
 from sqlalchemy import (
     Boolean,
     Column,
     Float,
+    Index,
     Integer,
     MetaData,
     String,
@@ -127,6 +132,14 @@ hub_admin_users = Table(
     Column("created_at", String(40), nullable=False),
 )
 
+hub_runtime_settings = Table(
+    "hub_runtime_settings",
+    metadata,
+    Column("key", String(255), primary_key=True),
+    Column("value_json", Text, nullable=False),
+    Column("updated_at", String(40), nullable=False),
+)
+
 mcp_stacks = Table(
     "mcp_stacks",
     metadata,
@@ -189,6 +202,34 @@ mcp_submissions = Table(
     Column("details_json", Text, nullable=False, default="{}"),
     Column("submitted_at", String(40), nullable=False),
 )
+
+Index("ix_mcp_servers_status", mcp_servers.c.status)
+Index("ix_mcp_servers_category", mcp_servers.c.category)
+Index("ix_mcp_servers_language", mcp_servers.c.language)
+Index("ix_mcp_servers_install_method", mcp_servers.c.install_method)
+Index("ix_mcp_servers_repo_url", mcp_servers.c.repo_url)
+Index("ix_mcp_tools_mcp_slug", mcp_tools.c.mcp_slug)
+Index("ix_mcp_known_issues_mcp_slug", mcp_known_issues.c.mcp_slug)
+Index("ix_telemetry_events_mcp_created", telemetry_events.c.mcp_slug, telemetry_events.c.created_at)
+Index("ix_telemetry_events_mcp_success", telemetry_events.c.mcp_slug, telemetry_events.c.success)
+Index("ix_telemetry_events_mcp_error", telemetry_events.c.mcp_slug, telemetry_events.c.error_code)
+Index("ix_telemetry_events_instance_hash", telemetry_events.c.instance_hash)
+Index("ix_mcp_stack_items_stack_slug", mcp_stack_items.c.stack_slug)
+Index("ix_mcp_stack_items_mcp_slug", mcp_stack_items.c.mcp_slug)
+Index("ix_showcase_entries_category", showcase_entries.c.category)
+Index("ix_mcp_submissions_status", mcp_submissions.c.status)
+
+
+HUB_RUNTIME_DEFAULTS: dict[str, Any] = {
+    "telemetry_ingest_enabled": True,
+    "api_token_writes_enabled": True,
+    "recommendation_mode": "balanced",
+    "featured_min_trust_score": 7.5,
+    "featured_min_signal_count": 3,
+    "discover_cache_ttl_seconds": 20,
+    "overview_cache_ttl_seconds": 30,
+    "default_gui_url": "",
+}
 
 
 SEED_MCPS: list[dict[str, Any]] = [
@@ -421,6 +462,7 @@ class HubStore:
     database_url: str
     engine: Engine = field(init=False, repr=False)
     backend: str = field(init=False)
+    _cache: dict[str, tuple[float, Any]] = field(init=False, repr=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         database_url = str(self.database_url or "").strip()
@@ -443,6 +485,77 @@ class HubStore:
             count = conn.execute(select(func.count()).select_from(mcp_servers)).scalar_one()
             if int(count or 0) == 0:
                 self._seed(conn)
+
+    def _cache_get(self, key: str) -> Any | None:
+        entry = self._cache.get(key)
+        if entry is None:
+            return None
+        expires_at, value = entry
+        if monotonic() >= expires_at:
+            self._cache.pop(key, None)
+            return None
+        return value
+
+    def _cache_set(self, key: str, value: Any, ttl_seconds: int) -> Any:
+        ttl = max(1, int(ttl_seconds or 1))
+        self._cache[key] = (monotonic() + ttl, value)
+        return value
+
+    def _invalidate_cache(self, *prefixes: str) -> None:
+        if not prefixes:
+            self._cache.clear()
+            return
+        for key in list(self._cache.keys()):
+            if any(key.startswith(prefix) for prefix in prefixes):
+                self._cache.pop(key, None)
+
+    def get_runtime_settings(self) -> dict[str, Any]:
+        cached = self._cache_get("runtime_settings")
+        if isinstance(cached, dict):
+            return dict(cached)
+        values = dict(HUB_RUNTIME_DEFAULTS)
+        with self.engine.connect() as conn:
+            rows = conn.execute(select(hub_runtime_settings)).mappings().all()
+        for row in rows:
+            key = str(row["key"]).strip()
+            if key not in HUB_RUNTIME_DEFAULTS:
+                continue
+            try:
+                parsed = json.loads(str(row["value_json"]))
+            except json.JSONDecodeError:
+                continue
+            values[key] = parsed
+        normalized = self._normalize_runtime_settings(values)
+        self._cache_set("runtime_settings", dict(normalized), 15)
+        return normalized
+
+    def update_runtime_settings(self, payload: dict[str, Any]) -> dict[str, Any]:
+        current = self.get_runtime_settings()
+        merged = {**current, **payload}
+        normalized = self._normalize_runtime_settings(merged)
+        now = _utc_now()
+        with self.engine.begin() as conn:
+            for key, value in normalized.items():
+                existing = conn.execute(
+                    select(hub_runtime_settings.c.key).where(hub_runtime_settings.c.key == key)
+                ).scalar_one_or_none()
+                serialized = json.dumps(value)
+                if existing is None:
+                    conn.execute(
+                        hub_runtime_settings.insert().values(
+                            key=key,
+                            value_json=serialized,
+                            updated_at=now,
+                        )
+                    )
+                else:
+                    conn.execute(
+                        update(hub_runtime_settings)
+                        .where(hub_runtime_settings.c.key == key)
+                        .values(value_json=serialized, updated_at=now)
+                    )
+        self._invalidate_cache("runtime_settings", "marketplace:", "overview:")
+        return normalized
 
     def _ensure_schema_extras(self) -> None:
         inspector = inspect(self.engine)
@@ -582,10 +695,19 @@ class HubStore:
         search: str = "",
         category: str = "",
         language: str = "",
+        runtime: str = "",
         min_reliability: int = 0,
         sort: str = "trending",
         include_private: bool = False,
     ) -> list[dict[str, Any]]:
+        runtime_settings = self.get_runtime_settings()
+        cache_key = (
+            "marketplace:"
+            f"{search.strip().lower()}|{category.strip()}|{language.strip()}|{runtime.strip()}|{int(min_reliability or 0)}|{sort.strip().lower()}|{int(include_private)}"
+        )
+        cached = self._cache_get(cache_key)
+        if isinstance(cached, list):
+            return [dict(item) for item in cached]
         telemetry = self._telemetry_stats_by_slug()
         minimum_percent = max(0, min(100, int(min_reliability or 0)))
         with self.engine.connect() as conn:
@@ -609,11 +731,45 @@ class HubStore:
             if conditions:
                 stmt = stmt.where(and_(*conditions))
             rows = conn.execute(stmt).mappings().all()
+            if runtime.strip():
+                rows = [
+                    row
+                    for row in rows
+                    if self._matches_runtime_engine(
+                        install_method=str(row["install_method"]),
+                        language=str(row["language"]),
+                        runtime=runtime,
+                    )
+                ]
+            slugs = [str(row["slug"]) for row in rows]
+            tools_map = self._prefetch_tools_map(conn, slugs)
+            recommendation_map = self._prefetch_recommendation_map(
+                conn,
+                slugs,
+                telemetry,
+                runtime_settings=runtime_settings,
+            )
+            error_cluster_map = self._build_error_clusters_for_slugs(
+                conn,
+                [slug for slug in slugs if int(telemetry.get(slug, {}).get("error_count", 0) or 0) > 0],
+            )
             items = []
             for row in rows:
-                item = self._build_mcp_summary(conn, row, telemetry.get(str(row["slug"]), {}))
-                item["error_clusters"] = self._build_error_clusters(conn, str(row["slug"]))
-                item["known_fixes"] = self._build_known_fix_summaries(item)
+                slug = str(row["slug"])
+                item = self._build_mcp_summary(
+                    conn,
+                    row,
+                    telemetry.get(slug, {}),
+                    prefetched_tools=tools_map,
+                    prefetched_recommendations=recommendation_map,
+                    runtime_settings=runtime_settings,
+                )
+                if int(item.get("recent_errors", 0) or 0) > 0:
+                    item["error_clusters"] = error_cluster_map.get(slug, [])
+                    item["known_fixes"] = self._build_known_fix_summaries(item)
+                else:
+                    item["error_clusters"] = []
+                    item["known_fixes"] = []
                 items.append(item)
             if minimum_percent > 0:
                 items = [
@@ -624,19 +780,50 @@ class HubStore:
 
         sort_key = str(sort or "trending").lower()
         if sort_key == "new":
-            items.sort(key=lambda item: item["created_at"], reverse=True)
-        elif sort_key == "reliable":
-            items.sort(key=lambda item: (item["success_rate"], item["active_instances"]), reverse=True)
-        elif sort_key == "installed":
-            items.sort(key=lambda item: item["installs"], reverse=True)
-        else:
             items.sort(
-                key=lambda item: (item["active_instances"], item["success_rate"], item["installs"]),
+                key=lambda item: (
+                    item["created_at"],
+                    float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                ),
                 reverse=True,
             )
-        return items
+        elif sort_key == "reliable":
+            items.sort(
+                key=lambda item: (
+                    (
+                        float(item.get("trust_score", {}).get("score", 0.0) or 0.0)
+                        * (float(item.get("install_confidence", {}).get("score", 0.0) or 0.0) / 10.0)
+                    ),
+                    float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                    float(item.get("install_confidence", {}).get("score", 0.0) or 0.0),
+                    int(item.get("reliability", {}).get("percent", 0) or 0),
+                    int(item.get("active_instances", 0) or 0),
+                ),
+                reverse=True,
+            )
+        elif sort_key == "installed":
+            items.sort(
+                key=lambda item: (
+                    int(item.get("installs", 0) or 0),
+                    float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                    int(item.get("active_instances", 0) or 0),
+                ),
+                reverse=True,
+            )
+        else:
+            items.sort(
+                key=lambda item: (
+                    int(item.get("usage_trend", {}).get("runs_24h", 0) or 0),
+                    float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                    int(item.get("active_instances", 0) or 0),
+                    int(item.get("installs", 0) or 0),
+                ),
+                reverse=True,
+            )
+        return self._cache_set(cache_key, items, int(runtime_settings.get("discover_cache_ttl_seconds", 20) or 20))
 
     def get_mcp(self, slug: str, *, include_private: bool = False) -> dict[str, Any] | None:
+        runtime_settings = self.get_runtime_settings()
         telemetry = self._telemetry_stats_by_slug().get(slug, {})
         with self.engine.connect() as conn:
             stmt = select(mcp_servers).where(mcp_servers.c.slug == slug)
@@ -645,11 +832,22 @@ class HubStore:
             row = conn.execute(stmt).mappings().first()
             if row is None:
                 return None
-            item = self._build_mcp_summary(conn, row, telemetry, detailed=True)
-            recommendation = conn.execute(
-                select(mcp_recommended_configs).where(mcp_recommended_configs.c.mcp_slug == slug)
-            ).mappings().first()
-            item["recommended_config"] = dict(recommendation) if recommendation else None
+            recommendation_map = self._prefetch_recommendation_map(
+                conn,
+                [slug],
+                {slug: telemetry},
+                runtime_settings=runtime_settings,
+            )
+            item = self._build_mcp_summary(
+                conn,
+                row,
+                telemetry,
+                detailed=True,
+                prefetched_tools=self._prefetch_tools_map(conn, [slug]),
+                prefetched_recommendations=recommendation_map,
+                runtime_settings=runtime_settings,
+            )
+            item["recommended_config"] = recommendation_map.get(slug)
             issue_rows = conn.execute(
                 select(mcp_known_issues.c.issue_text)
                 .where(mcp_known_issues.c.mcp_slug == slug)
@@ -658,6 +856,7 @@ class HubStore:
             item["known_issues"] = [str(issue[0]) for issue in issue_rows]
             item["error_clusters"] = self._build_error_clusters(conn, slug)
             item["known_fixes"] = self._build_known_fix_summaries(item)
+            item["common_combinations"] = self._build_common_combinations(conn, slug)
             return item
 
     def get_mcp_fix_suggestions(
@@ -910,18 +1109,21 @@ class HubStore:
                 stack_items: list[dict[str, Any]] = []
                 if stack_row is not None:
                     stack_items = conn.execute(
-                        select(mcp_servers.c.slug, mcp_servers.c.name)
+                        select(mcp_servers.c.slug, mcp_servers.c.name, mcp_servers.c.category)
                         .select_from(
                             mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
                         )
                         .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
                         .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
                     ).mappings().all()
+                stack_categories = [str(item.get("category", "")) for item in stack_items]
                 items.append(
                     {
                         **dict(row),
                         "stack": dict(stack_row) if stack_row else None,
                         "stack_items": [dict(item) for item in stack_items],
+                        "best_for": self._build_stack_best_for_payload(stack_categories),
+                        "demo_ready": bool(stack_row and stack_items and str(row.get("example_prompt", "")).strip()),
                     }
                 )
             return items
@@ -986,6 +1188,10 @@ class HubStore:
             return results
 
     def get_overview_stats(self) -> dict[str, Any]:
+        runtime_settings = self.get_runtime_settings()
+        cached = self._cache_get("overview:default")
+        if isinstance(cached, dict):
+            return dict(cached)
         telemetry = self._telemetry_stats_by_slug()
         marketplace = self.list_mcps()
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -995,6 +1201,11 @@ class HubStore:
                     telemetry_events.c.created_at >= today_start.isoformat(timespec="seconds")
                 )
             ).scalar_one()
+            common_combinations = self._build_overview_combinations(conn)
+        featured_min_trust = float(runtime_settings.get("featured_min_trust_score", 7.5) or 0.0)
+        featured_marketplace = [
+            item for item in marketplace if float(item.get("trust_score", {}).get("score", 0.0) or 0.0) >= featured_min_trust
+        ] or list(marketplace)
         active_instances = sum(int(item["active_instances"]) for item in marketplace)
         category_counts: dict[str, int] = {}
         for item in marketplace:
@@ -1004,34 +1215,95 @@ class HubStore:
         if category_counts:
             top_category = max(category_counts.items(), key=lambda entry: (entry[1], entry[0]))[0]
         trending_mcps = sorted(
-            marketplace,
+            featured_marketplace,
             key=lambda item: (
+                int(item.get("usage_trend", {}).get("runs_24h", 0) or 0),
+                float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
                 int(item.get("recent_runs", 0) or 0),
                 int(item.get("active_instances", 0) or 0),
-                float(item.get("success_rate", 0.0) or 0.0),
             ),
             reverse=True,
         )[:3]
         most_reliable_mcps = sorted(
             marketplace,
             key=lambda item: (
-                float(item.get("success_rate", 0.0) or 0.0),
+                (
+                    float(item.get("trust_score", {}).get("score", 0.0) or 0.0)
+                    * (float(item.get("install_confidence", {}).get("score", 0.0) or 0.0) / 10.0)
+                ),
+                float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                float(item.get("install_confidence", {}).get("score", 0.0) or 0.0),
+                int(item.get("reliability", {}).get("percent", 0) or 0),
                 int(item.get("active_instances", 0) or 0),
             ),
             reverse=True,
         )[:3]
-        return {
+        average_success_rate = round(
+            (sum(float(item.get("success_rate", 0.0) or 0.0) for item in marketplace) / len(marketplace)) if marketplace else 0.0,
+            4,
+        )
+        average_latency_ms = round(
+            (sum(float(item.get("avg_latency_ms", 0.0) or 0.0) for item in marketplace) / len(marketplace)) if marketplace else 0.0,
+            1,
+        )
+        top_categories = [
+            {"name": name, "count": count}
+            for name, count in sorted(category_counts.items(), key=lambda entry: (-entry[1], entry[0]))[:4]
+        ]
+        fastest_growing_mcps = sorted(
+            marketplace,
+            key=lambda item: (
+                int(item.get("usage_trend", {}).get("runs_24h", 0) or 0),
+                float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                int(item.get("recent_runs", 0) or 0),
+            ),
+            reverse=True,
+        )[:3]
+        most_installed_mcps = sorted(
+            marketplace,
+            key=lambda item: (
+                int(item.get("installs", 0) or 0),
+                float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                int(item.get("active_instances", 0) or 0),
+            ),
+            reverse=True,
+        )[:3]
+        overview = {
             "registry_count": len(marketplace),
             "verified_count": sum(1 for item in marketplace if item["verified"]),
             "active_instances": active_instances,
             "runs_today": int(total_events_today or 0),
             "top_category": top_category,
             "unique_categories": len(category_counts),
-            "top_mcps": marketplace[:5],
+            "top_mcps": sorted(
+                featured_marketplace,
+                key=lambda item: (
+                    float(item.get("trust_score", {}).get("score", 0.0) or 0.0),
+                    int(item.get("active_instances", 0) or 0),
+                    int(item.get("installs", 0) or 0),
+                ),
+                reverse=True,
+            )[:5],
             "trending_mcps": trending_mcps,
             "most_reliable_mcps": most_reliable_mcps,
+            "fastest_growing_mcps": fastest_growing_mcps,
+            "most_installed_mcps": most_installed_mcps,
+            "average_success_rate": average_success_rate,
+            "average_latency_ms": average_latency_ms,
+            "top_categories": top_categories,
+            "network_health": self._build_network_health_payload(
+                average_success_rate=average_success_rate,
+                average_latency_ms=average_latency_ms,
+                runs_today=int(total_events_today or 0),
+            ),
+            "common_combinations": common_combinations,
             "telemetry_active": bool(telemetry),
         }
+        return self._cache_set(
+            "overview:default",
+            overview,
+            int(runtime_settings.get("overview_cache_ttl_seconds", 30) or 30),
+        )
 
     def record_telemetry_event(self, payload: dict[str, Any]) -> dict[str, Any]:
         slug = str(payload.get("mcp_slug", "")).strip()
@@ -1061,6 +1333,7 @@ class HubStore:
                     created_at=created_at,
                 )
             )
+        self._invalidate_cache("marketplace:", "overview:")
         return {
             "mcp_slug": slug,
             "instance_hash": instance_hash,
@@ -1193,6 +1466,7 @@ class HubStore:
             )
 
         item = self.get_mcp(slug)
+        self._invalidate_cache("marketplace:", "overview:")
         return {
             "created": True,
             "duplicate": False,
@@ -1253,6 +1527,7 @@ class HubStore:
                     )
                 )
         created = self.get_stack(slug, include_private=True)
+        self._invalidate_cache("overview:")
         return {
             "created": True,
             "item": created,
@@ -1304,6 +1579,7 @@ class HubStore:
                 )
             )
         item = self.get_showcase(slug, include_private=True)
+        self._invalidate_cache("overview:")
         return {"created": True, "item": item}
 
     def get_showcase(self, slug: str, *, include_private: bool = False) -> dict[str, Any] | None:
@@ -1330,10 +1606,38 @@ class HubStore:
                 .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
                 .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
             ).mappings().all()
+            stack_install_methods = conn.execute(
+                select(mcp_servers.c.install_method)
+                .select_from(
+                    mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+                )
+                .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
+            ).all()
+            stack_categories = [
+                str(item.get("category", ""))
+                for item in conn.execute(
+                    select(mcp_servers.c.category)
+                    .select_from(
+                        mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+                    )
+                    .where(mcp_stack_items.c.stack_slug == row["stack_slug"])
+                ).mappings().all()
+            ]
             return {
                 **dict(row),
                 "stack": dict(stack_row) if stack_row else None,
                 "stack_items": [dict(item) for item in stack_items],
+                "best_for": self._build_stack_best_for_payload(stack_categories),
+                "demo_ready": bool(stack_row and stack_items and str(row.get("example_prompt", "")).strip()),
+                "stack_difficulty": self._build_stack_difficulty_payload(
+                    item_count=len(stack_items),
+                    install_methods=[str(item[0]) for item in stack_install_methods],
+                ),
+                "diagram_nodes": [
+                    str(stack_row["recommended_model"]).strip() if stack_row else "",
+                    *[str(item.get("name", "")) for item in stack_items if str(item.get("name", "")).strip()],
+                    "Result",
+                ],
             }
 
     def list_mcp_moderation_queue(self) -> list[dict[str, Any]]:
@@ -1409,6 +1713,7 @@ class HubStore:
         item = self.get_mcp(slug, include_private=True)
         if item is None:
             raise ValueError("MCP server not found.")
+        self._invalidate_cache("marketplace:", "overview:")
         return item
 
     def moderate_stack(self, slug: str, *, action: str) -> dict[str, Any]:
@@ -1431,6 +1736,7 @@ class HubStore:
         item = self.get_stack(slug, include_private=True)
         if item is None:
             raise ValueError("Stack not found.")
+        self._invalidate_cache("overview:")
         return item
 
     def moderate_showcase(self, slug: str, *, action: str) -> dict[str, Any]:
@@ -1453,16 +1759,23 @@ class HubStore:
         item = self.get_showcase(slug, include_private=True)
         if item is None:
             raise ValueError("Showcase entry not found.")
+        self._invalidate_cache("overview:")
         return item
 
     def increment_mcp_install(self, slug: str) -> dict[str, int]:
-        return self._increment_counter(mcp_servers, slug, "installs")
+        result = self._increment_counter(mcp_servers, slug, "installs")
+        self._invalidate_cache("marketplace:", "overview:")
+        return result
 
     def increment_stack_import(self, slug: str) -> dict[str, int]:
-        return self._increment_counter(mcp_stacks, slug, "imports_count")
+        result = self._increment_counter(mcp_stacks, slug, "imports_count")
+        self._invalidate_cache("overview:")
+        return result
 
     def increment_showcase_import(self, slug: str) -> dict[str, int]:
-        return self._increment_counter(showcase_entries, slug, "imports_count")
+        result = self._increment_counter(showcase_entries, slug, "imports_count")
+        self._invalidate_cache("overview:")
+        return result
 
     def categories(self) -> list[str]:
         with self.engine.connect() as conn:
@@ -1478,6 +1791,10 @@ class HubStore:
             ).all()
             return [str(row[0]) for row in rows]
 
+    @staticmethod
+    def runtime_options() -> list[str]:
+        return ["Node", "Python", "Docker", "Remote/API"]
+
     def showcase_categories(self) -> list[str]:
         with self.engine.connect() as conn:
             rows = conn.execute(
@@ -1492,23 +1809,64 @@ class HubStore:
         telemetry: dict[str, Any],
         *,
         detailed: bool = False,
+        prefetched_tools: dict[str, list[str]] | None = None,
+        prefetched_recommendations: dict[str, dict[str, Any] | None] | None = None,
+        runtime_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        tool_rows = conn.execute(
-            select(mcp_tools.c.tool_name)
-            .where(mcp_tools.c.mcp_slug == row["slug"])
-            .order_by(mcp_tools.c.tool_name.asc())
-        ).all()
-        tools = [str(tool[0]) for tool in tool_rows]
+        slug = str(row["slug"])
+        tools = list((prefetched_tools or {}).get(slug, []))
+        if prefetched_tools is None or slug not in prefetched_tools:
+            tool_rows = conn.execute(
+                select(mcp_tools.c.tool_name)
+                .where(mcp_tools.c.mcp_slug == slug)
+                .order_by(mcp_tools.c.tool_name.asc())
+            ).all()
+            tools = [str(tool[0]) for tool in tool_rows]
+        recommendation_known = prefetched_recommendations is not None and slug in prefetched_recommendations
+        recommendation = (prefetched_recommendations or {}).get(slug)
+        if not recommendation_known:
+            recommendation = conn.execute(
+                select(mcp_recommended_configs).where(mcp_recommended_configs.c.mcp_slug == slug)
+            ).mappings().first()
+            recommendation = dict(recommendation) if recommendation else None
         effective_active = max(int(row["active_instances"]), int(telemetry.get("active_instances", 0) or 0))
         effective_success = (
             float(telemetry.get("success_rate"))
-            if telemetry.get("run_count", 0) >= 3
+            if telemetry.get("run_count", 0) >= int((runtime_settings or {}).get("featured_min_signal_count", 3) or 3)
             else float(row["success_rate"])
         )
         effective_latency = (
             float(telemetry.get("avg_latency_ms"))
-            if telemetry.get("run_count", 0) >= 3
+            if telemetry.get("run_count", 0) >= int((runtime_settings or {}).get("featured_min_signal_count", 3) or 3)
             else float(row["avg_latency_ms"])
+        )
+        dependencies = self._build_dependency_payload(
+            install_method=str(row["install_method"]),
+            language=str(row["language"]),
+            status=str(row["status"]),
+        )
+        permission_hints = self._build_permission_hints_payload(
+            install_method=str(row["install_method"]),
+            language=str(row["language"]),
+            status=str(row["status"]),
+            tags=json.loads(str(row["tags_json"])),
+            tools=tools,
+        )
+        install_confidence = self._build_install_confidence_payload(
+            success_rate=effective_success,
+            verified=bool(row["verified"]),
+            recommendation=dict(recommendation) if recommendation else None,
+            active_instances=effective_active,
+            installs=int(row["installs"]),
+            signal_count=int(telemetry.get("run_count", 0) or 0),
+            telemetry=telemetry,
+        )
+        trust_score = self._build_trust_score_payload(
+            success_rate=effective_success,
+            install_confidence=install_confidence,
+            verified=bool(row["verified"]),
+            telemetry=telemetry,
+            recommendation=dict(recommendation) if recommendation else None,
         )
         summary = {
             **dict(row),
@@ -1532,11 +1890,33 @@ class HubStore:
                 tags=json.loads(str(row["tags_json"])),
                 tools=tools,
             ),
-            "dependencies": self._build_dependency_payload(
+            "dependencies": dependencies,
+            "permission_hints": permission_hints,
+            "runtime_engine": self._build_runtime_engine_payload(
                 install_method=str(row["install_method"]),
                 language=str(row["language"]),
-                status=str(row["status"]),
             ),
+            "mcp_type": self._build_mcp_type_payload(
+                install_method=str(row["install_method"]),
+                language=str(row["language"]),
+            ),
+            "install_confidence": install_confidence,
+            "trust_score": trust_score,
+            "usage_trend": self._build_usage_trend_payload(
+                slug=slug,
+                telemetry=telemetry,
+                recent_runs=int(telemetry.get("run_count", 0) or 0),
+            ),
+            "community_signals": {
+                "runs_30d": int(telemetry.get("run_count", 0) or 0),
+                "instances_30d": int(telemetry.get("active_instances", 0) or 0),
+                "config_consensus": round(float(telemetry.get("config_consensus", 0.0) or 0.0), 4),
+                "repair_rate": round(float(telemetry.get("repair_rate", 0.0) or 0.0), 4),
+                "repair_opportunities": int(telemetry.get("repair_opportunities", 0) or 0),
+                "repaired_instances": int(telemetry.get("repaired_instances", 0) or 0),
+                "top_config_fingerprint": str(telemetry.get("top_config_fingerprint", "") or ""),
+                "top_config_share": round(float(telemetry.get("top_config_share", 0.0) or 0.0), 4),
+            },
             "difficulty": self._build_mcp_difficulty_payload(
                 install_method=str(row["install_method"]),
                 verified=bool(row["verified"]),
@@ -1561,6 +1941,7 @@ class HubStore:
                 mcp_servers.c.repo_url,
                 mcp_servers.c.install_method,
                 mcp_servers.c.status,
+                mcp_servers.c.category,
             )
             .select_from(
                 mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
@@ -1575,14 +1956,136 @@ class HubStore:
                 item_count=len(item_rows),
                 install_methods=[str(item.get("install_method", "")) for item in item_rows],
             ),
+            "best_for": self._build_stack_best_for_payload([str(item.get("category", "")) for item in item_rows]),
             "diagram": " -> ".join(str(item.get("name", "")) for item in item_rows if str(item.get("name", "")).strip()),
+            "diagram_nodes": [
+                str(row["recommended_model"]).strip(),
+                *[str(item.get("name", "")) for item in item_rows if str(item.get("name", "")).strip()],
+                "Result",
+            ],
         }
         if detailed:
             summary["mcp_count"] = len(item_rows)
         return summary
 
+    def _build_common_combinations(self, conn, slug: str) -> list[dict[str, Any]]:
+        signals = self._build_combination_signal_map(conn)
+        related: list[dict[str, Any]] = []
+        for pair_key, signal in signals.items():
+            if slug not in pair_key:
+                continue
+            other_slug = signal["slugs"][0] if signal["slugs"][1] == slug else signal["slugs"][1]
+            other_name = signal["names"][0] if signal["slugs"][0] == other_slug else signal["names"][1]
+            related.append(
+                {
+                    "slug": other_slug,
+                    "name": other_name,
+                    "stack_count": int(signal.get("stack_count", 0) or 0),
+                    "telemetry_instances": int(signal.get("telemetry_instances", 0) or 0),
+                    "strength_score": round(float(signal.get("strength_score", 0.0) or 0.0), 2),
+                }
+            )
+        related.sort(
+            key=lambda item: (
+                float(item.get("strength_score", 0.0) or 0.0),
+                int(item.get("telemetry_instances", 0) or 0),
+                int(item.get("stack_count", 0) or 0),
+                str(item.get("name", "")),
+            ),
+            reverse=True,
+        )
+        return related[:4]
+
+    def _build_overview_combinations(self, conn) -> list[dict[str, Any]]:
+        ranked = sorted(
+            self._build_combination_signal_map(conn).values(),
+            key=lambda item: (
+                float(item.get("strength_score", 0.0) or 0.0),
+                int(item.get("telemetry_instances", 0) or 0),
+                int(item.get("stack_count", 0) or 0),
+                " + ".join(item["names"]),
+            ),
+            reverse=True,
+        )[:4]
+        for item in ranked:
+            item["label"] = " + ".join(item["names"])
+        return ranked
+
+    def _build_combination_signal_map(self, conn) -> dict[tuple[str, str], dict[str, Any]]:
+        name_rows = conn.execute(select(mcp_servers.c.slug, mcp_servers.c.name)).all()
+        name_map = {str(row[0]): str(row[1]) for row in name_rows}
+        counts: dict[tuple[str, str], dict[str, Any]] = {}
+
+        stack_rows = conn.execute(
+            select(mcp_stacks.c.slug)
+            .where(mcp_stacks.c.is_public.is_(True))
+            .order_by(mcp_stacks.c.slug.asc())
+        ).all()
+        for stack_row in stack_rows:
+            stack_slug = str(stack_row[0])
+            items = conn.execute(
+                select(mcp_servers.c.slug, mcp_servers.c.name)
+                .select_from(
+                    mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+                )
+                .where(mcp_stack_items.c.stack_slug == stack_slug)
+                .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
+            ).mappings().all()
+            normalized_items = [(str(item["slug"]), str(item["name"])) for item in items]
+            for first, second in combinations(normalized_items, 2):
+                ordered = sorted((first, second), key=lambda entry: entry[0])
+                pair_key = (ordered[0][0], ordered[1][0])
+                if pair_key not in counts:
+                    counts[pair_key] = {
+                        "slugs": [ordered[0][0], ordered[1][0]],
+                        "names": [ordered[0][1], ordered[1][1]],
+                        "stack_count": 0,
+                        "telemetry_instances": 0,
+                    }
+                counts[pair_key]["stack_count"] += 1
+
+        since_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+        telemetry_rows = conn.execute(
+            select(telemetry_events.c.instance_hash, telemetry_events.c.mcp_slug)
+            .where(
+                and_(
+                    telemetry_events.c.created_at >= since_30d,
+                    telemetry_events.c.success.is_(True),
+                )
+            )
+            .distinct()
+            .order_by(telemetry_events.c.instance_hash.asc(), telemetry_events.c.mcp_slug.asc())
+        ).all()
+        by_instance: dict[str, list[str]] = defaultdict(list)
+        for instance_hash, mcp_slug in telemetry_rows:
+            slug = str(mcp_slug)
+            if slug not in by_instance[str(instance_hash)]:
+                by_instance[str(instance_hash)].append(slug)
+        for slugs in by_instance.values():
+            if len(slugs) < 2:
+                continue
+            unique_slugs = sorted({slug for slug in slugs if slug})
+            for first_slug, second_slug in combinations(unique_slugs, 2):
+                ordered = tuple(sorted((first_slug, second_slug)))
+                if ordered not in counts:
+                    counts[ordered] = {
+                        "slugs": [ordered[0], ordered[1]],
+                        "names": [name_map.get(ordered[0], ordered[0]), name_map.get(ordered[1], ordered[1])],
+                        "stack_count": 0,
+                        "telemetry_instances": 0,
+                    }
+                counts[ordered]["telemetry_instances"] += 1
+
+        for item in counts.values():
+            stack_signal = min(int(item.get("stack_count", 0) or 0) / 5.0, 1.0)
+            telemetry_signal = min(int(item.get("telemetry_instances", 0) or 0) / 20.0, 1.0)
+            item["strength_score"] = round(((0.6 * stack_signal) + (0.4 * telemetry_signal)) * 10.0, 1)
+        return counts
+
     def _telemetry_stats_by_slug(self) -> dict[str, dict[str, Any]]:
-        window_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds")
+        window_start = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+        since_24h = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
+        since_7d = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds")
         with self.engine.connect() as conn:
             rows = conn.execute(
                 select(
@@ -1592,9 +2095,29 @@ class HubStore:
                     func.sum(case((telemetry_events.c.success.is_(False), 1), else_=0)).label("error_count"),
                     func.avg(func.nullif(telemetry_events.c.latency_ms, 0)).label("avg_latency_ms"),
                     func.count(func.distinct(telemetry_events.c.instance_hash)).label("active_instances"),
+                    func.sum(case((telemetry_events.c.created_at >= since_24h, 1), else_=0)).label("runs_24h"),
+                    func.sum(case((telemetry_events.c.created_at >= since_7d, 1), else_=0)).label("runs_7d"),
                 )
                 .where(telemetry_events.c.created_at >= window_start)
                 .group_by(telemetry_events.c.mcp_slug)
+            ).mappings().all()
+            event_rows = conn.execute(
+                select(
+                    telemetry_events.c.mcp_slug,
+                    telemetry_events.c.instance_hash,
+                    telemetry_events.c.success,
+                    telemetry_events.c.created_at,
+                    telemetry_events.c.transport,
+                    telemetry_events.c.timeout_bucket,
+                    telemetry_events.c.retries,
+                )
+                .where(telemetry_events.c.created_at >= window_start)
+                .order_by(
+                    telemetry_events.c.mcp_slug.asc(),
+                    telemetry_events.c.instance_hash.asc(),
+                    telemetry_events.c.created_at.asc(),
+                    telemetry_events.c.id.asc(),
+                )
             ).mappings().all()
         stats: dict[str, dict[str, Any]] = {}
         for row in rows:
@@ -1607,8 +2130,274 @@ class HubStore:
                 "success_rate": (success_count / run_count) if run_count else 0.0,
                 "avg_latency_ms": float(row["avg_latency_ms"] or 0.0),
                 "active_instances": int(row["active_instances"] or 0),
+                "runs_24h": int(row["runs_24h"] or 0),
+                "runs_7d": int(row["runs_7d"] or 0),
+                "config_consensus": 0.0,
+                "repair_rate": 0.0,
+                "repair_opportunities": 0,
+                "repaired_instances": 0,
+                "top_config_fingerprint": "",
+                "top_config_share": 0.0,
             }
+        successful_fingerprints: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+        instance_streams: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+        for row in event_rows:
+            slug = str(row["mcp_slug"])
+            instance_key = str(row["instance_hash"])
+            fingerprint = self._build_config_fingerprint(
+                transport=str(row["transport"] or ""),
+                timeout_bucket=str(row["timeout_bucket"] or ""),
+                retries=int(row["retries"] or 0),
+            )
+            event = {
+                "success": bool(row["success"]),
+                "fingerprint": fingerprint,
+            }
+            instance_streams[(slug, instance_key)].append(event)
+            if event["success"]:
+                successful_fingerprints[slug][fingerprint] += 1
+
+        for slug, fingerprint_counts in successful_fingerprints.items():
+            total_successes = sum(int(count) for count in fingerprint_counts.values())
+            if slug not in stats or total_successes <= 0:
+                continue
+            top_fingerprint, top_count = max(
+                fingerprint_counts.items(),
+                key=lambda item: (int(item[1]), item[0]),
+            )
+            stats[slug]["config_consensus"] = round(top_count / total_successes, 4)
+            stats[slug]["top_config_fingerprint"] = top_fingerprint
+            stats[slug]["top_config_share"] = round(top_count / total_successes, 4)
+
+        repair_opportunities_by_slug: dict[str, int] = defaultdict(int)
+        repaired_instances_by_slug: dict[str, int] = defaultdict(int)
+        for (slug, _instance_key), events in instance_streams.items():
+            saw_failure = False
+            last_failed_fingerprint = ""
+            repaired = False
+            for event in events:
+                fingerprint = str(event.get("fingerprint", "") or "")
+                if not bool(event.get("success")):
+                    saw_failure = True
+                    if fingerprint:
+                        last_failed_fingerprint = fingerprint
+                    continue
+                if not saw_failure:
+                    continue
+                if fingerprint and fingerprint != last_failed_fingerprint:
+                    repaired = True
+                    break
+            if saw_failure:
+                repair_opportunities_by_slug[slug] += 1
+                if repaired:
+                    repaired_instances_by_slug[slug] += 1
+
+        for slug, item in stats.items():
+            opportunities = int(repair_opportunities_by_slug.get(slug, 0) or 0)
+            repaired = int(repaired_instances_by_slug.get(slug, 0) or 0)
+            item["repair_opportunities"] = opportunities
+            item["repaired_instances"] = repaired
+            item["repair_rate"] = round((repaired / opportunities) if opportunities else 0.0, 4)
         return stats
+
+    def _prefetch_tools_map(self, conn, slugs: list[str]) -> dict[str, list[str]]:
+        if not slugs:
+            return {}
+        rows = conn.execute(
+            select(mcp_tools.c.mcp_slug, mcp_tools.c.tool_name)
+            .where(mcp_tools.c.mcp_slug.in_(slugs))
+            .order_by(mcp_tools.c.mcp_slug.asc(), mcp_tools.c.tool_name.asc())
+        ).all()
+        tools_map: dict[str, list[str]] = defaultdict(list)
+        for mcp_slug, tool_name in rows:
+            tools_map[str(mcp_slug)].append(str(tool_name))
+        return dict(tools_map)
+
+    def _prefetch_recommendation_map(
+        self,
+        conn,
+        slugs: list[str],
+        telemetry_by_slug: dict[str, dict[str, Any]],
+        *,
+        runtime_settings: dict[str, Any] | None = None,
+    ) -> dict[str, dict[str, Any] | None]:
+        if not slugs:
+            return {}
+        static_rows = conn.execute(
+            select(mcp_recommended_configs).where(mcp_recommended_configs.c.mcp_slug.in_(slugs))
+        ).mappings().all()
+        static_map = {str(row["mcp_slug"]): dict(row) for row in static_rows}
+        dynamic_map = self._build_dynamic_recommendation_map(
+            conn,
+            slugs,
+            runtime_settings=runtime_settings or self.get_runtime_settings(),
+        )
+        merged: dict[str, dict[str, Any] | None] = {}
+        mode = str((runtime_settings or {}).get("recommendation_mode", "balanced")).strip().lower() or "balanced"
+        for slug in slugs:
+            static_item = static_map.get(slug)
+            dynamic_item = dynamic_map.get(slug)
+            merged[slug] = self._merge_recommendation_sources(static_item, dynamic_item, mode=mode)
+        return merged
+
+    def _build_dynamic_recommendation_map(
+        self,
+        conn,
+        slugs: list[str],
+        *,
+        runtime_settings: dict[str, Any],
+    ) -> dict[str, dict[str, Any]]:
+        if not slugs:
+            return {}
+        min_signals = max(1, int(runtime_settings.get("featured_min_signal_count", 3) or 3))
+        since_30d = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat(timespec="seconds")
+        rows = conn.execute(
+            select(
+                telemetry_events.c.mcp_slug,
+                telemetry_events.c.transport,
+                telemetry_events.c.timeout_bucket,
+                telemetry_events.c.retries,
+                func.count().label("run_count"),
+                func.sum(case((telemetry_events.c.success.is_(True), 1), else_=0)).label("success_count"),
+                func.count(func.distinct(telemetry_events.c.instance_hash)).label("active_instances"),
+                func.avg(func.nullif(telemetry_events.c.latency_ms, 0)).label("avg_latency_ms"),
+            )
+            .where(
+                and_(
+                    telemetry_events.c.mcp_slug.in_(slugs),
+                    telemetry_events.c.created_at >= since_30d,
+                    telemetry_events.c.transport != "",
+                )
+            )
+            .group_by(
+                telemetry_events.c.mcp_slug,
+                telemetry_events.c.transport,
+                telemetry_events.c.timeout_bucket,
+                telemetry_events.c.retries,
+            )
+        ).mappings().all()
+        grouped: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            run_count = int(row["run_count"] or 0)
+            if run_count < min_signals:
+                continue
+            timeout = self._timeout_from_bucket(str(row["timeout_bucket"] or "").strip())
+            if timeout <= 0:
+                continue
+            success_rate = (int(row["success_count"] or 0) / run_count) if run_count else 0.0
+            score = self._bayesian_success_score(success_rate=success_rate, signal_count=run_count)
+            latency = float(row["avg_latency_ms"] or 0.0)
+            confidence = min(
+                0.99,
+                0.45
+                + score * 0.35
+                + min(int(row["active_instances"] or 0), 20) * 0.01
+                + min(run_count, 50) * 0.003
+                - (0.05 if latency > 3500 else 0.0),
+            )
+            item = {
+                "mcp_slug": str(row["mcp_slug"]),
+                "transport": str(row["transport"]),
+                "timeout": timeout,
+                "retries": int(row["retries"] or 0),
+                "confidence_score": round(confidence, 3),
+                "based_on_instances": int(row["active_instances"] or 0),
+                "based_on_runs": run_count,
+                "source": "telemetry",
+            }
+            current = grouped.get(item["mcp_slug"])
+            if current is None or (
+                float(item["confidence_score"]) > float(current.get("confidence_score", 0.0))
+                or (
+                    float(item["confidence_score"]) == float(current.get("confidence_score", 0.0))
+                    and int(item["based_on_runs"]) > int(current.get("based_on_runs", 0))
+                )
+            ):
+                grouped[item["mcp_slug"]] = item
+        return grouped
+
+    def _build_error_clusters_for_slugs(self, conn, slugs: list[str]) -> dict[str, list[dict[str, Any]]]:
+        if not slugs:
+            return {}
+        rows = conn.execute(
+            select(
+                telemetry_events.c.mcp_slug,
+                telemetry_events.c.error_code,
+                func.count().label("event_count"),
+                func.avg(func.nullif(telemetry_events.c.latency_ms, 0)).label("avg_latency_ms"),
+                func.count(func.distinct(telemetry_events.c.instance_hash)).label("instance_count"),
+            )
+            .where(
+                and_(
+                    telemetry_events.c.mcp_slug.in_(slugs),
+                    telemetry_events.c.success.is_(False),
+                    telemetry_events.c.error_code != "",
+                )
+            )
+            .group_by(telemetry_events.c.mcp_slug, telemetry_events.c.error_code)
+            .order_by(telemetry_events.c.mcp_slug.asc(), func.count().desc(), telemetry_events.c.error_code.asc())
+        ).mappings().all()
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            slug = str(row["mcp_slug"])
+            bucket = grouped[slug]
+            if len(bucket) >= 4:
+                continue
+            error_code = str(row["error_code"]).strip()
+            event_count = int(row["event_count"] or 0)
+            instance_count = int(row["instance_count"] or 0)
+            confidence = min(0.95, 0.45 + min(event_count, 12) * 0.03 + min(instance_count, 6) * 0.02)
+            bucket.append(
+                {
+                    "error_code": error_code,
+                    "event_count": event_count,
+                    "instance_count": instance_count,
+                    "avg_latency_ms": float(row["avg_latency_ms"] or 0.0),
+                    "summary": self._summarize_error_cluster(error_code, event_count=event_count, instance_count=instance_count),
+                    "confidence_score": round(confidence, 2),
+                }
+            )
+        return dict(grouped)
+
+    @staticmethod
+    def _timeout_from_bucket(bucket: str) -> int:
+        text = str(bucket or "").strip()
+        if not text:
+            return 0
+        range_match = re.match(r"^(\d+)\s*-\s*(\d+)$", text)
+        if range_match:
+            return int(range_match.group(2))
+        lower_bound_match = re.match(r"^[>≥]\s*(\d+)$", text)
+        if lower_bound_match:
+            return int(lower_bound_match.group(1))
+        exact_match = re.match(r"^(\d+)$", text)
+        if exact_match:
+            return int(exact_match.group(1))
+        return 0
+
+    @staticmethod
+    def _build_config_fingerprint(*, transport: str, timeout_bucket: str, retries: int) -> str:
+        normalized_transport = str(transport or "").strip().lower() or "unknown"
+        normalized_timeout = str(timeout_bucket or "").strip().lower() or "unknown"
+        normalized_retries = max(0, int(retries or 0))
+        return f"{normalized_transport}:{normalized_timeout}:{normalized_retries}"
+
+    @staticmethod
+    def _merge_recommendation_sources(
+        static_item: dict[str, Any] | None,
+        dynamic_item: dict[str, Any] | None,
+        *,
+        mode: str,
+    ) -> dict[str, Any] | None:
+        if static_item is None:
+            return dynamic_item
+        if dynamic_item is None:
+            return static_item
+        static_conf = float(static_item.get("confidence_score", 0.0) or 0.0)
+        dynamic_conf = float(dynamic_item.get("confidence_score", 0.0) or 0.0)
+        if mode == "conservative":
+            return dynamic_item if dynamic_conf >= (static_conf + 0.12) else static_item
+        return dynamic_item if dynamic_conf >= static_conf else static_item
 
     @staticmethod
     def _ensure_sqlite_parent(database_url: str) -> None:
@@ -1759,6 +2548,34 @@ class HubStore:
             normalized.append(item[:160])
         return normalized
 
+    @staticmethod
+    def _normalize_runtime_settings(payload: dict[str, Any]) -> dict[str, Any]:
+        mode = str(payload.get("recommendation_mode", HUB_RUNTIME_DEFAULTS["recommendation_mode"])).strip().lower()
+        if mode not in {"conservative", "balanced"}:
+            mode = "balanced"
+        return {
+            "telemetry_ingest_enabled": bool(payload.get("telemetry_ingest_enabled", HUB_RUNTIME_DEFAULTS["telemetry_ingest_enabled"])),
+            "api_token_writes_enabled": bool(payload.get("api_token_writes_enabled", HUB_RUNTIME_DEFAULTS["api_token_writes_enabled"])),
+            "recommendation_mode": mode,
+            "featured_min_trust_score": round(
+                max(0.0, min(10.0, float(payload.get("featured_min_trust_score", HUB_RUNTIME_DEFAULTS["featured_min_trust_score"]) or 0.0))),
+                1,
+            ),
+            "featured_min_signal_count": max(
+                1,
+                min(100, int(payload.get("featured_min_signal_count", HUB_RUNTIME_DEFAULTS["featured_min_signal_count"]) or 1)),
+            ),
+            "discover_cache_ttl_seconds": max(
+                5,
+                min(600, int(payload.get("discover_cache_ttl_seconds", HUB_RUNTIME_DEFAULTS["discover_cache_ttl_seconds"]) or 5)),
+            ),
+            "overview_cache_ttl_seconds": max(
+                5,
+                min(600, int(payload.get("overview_cache_ttl_seconds", HUB_RUNTIME_DEFAULTS["overview_cache_ttl_seconds"]) or 5)),
+            ),
+            "default_gui_url": str(payload.get("default_gui_url", HUB_RUNTIME_DEFAULTS["default_gui_url"]) or "").strip().rstrip("/"),
+        }
+
     @classmethod
     def _normalize_stack_items(cls, value: Any) -> list[str]:
         return cls._normalize_text_list(value)
@@ -1842,6 +2659,20 @@ class HubStore:
         return deduped[:4]
 
     @staticmethod
+    def _build_stack_best_for_payload(categories: list[str]) -> list[str]:
+        normalized = {str(item).strip().lower() for item in categories if str(item).strip()}
+        result: list[str] = []
+        if "coding" in normalized:
+            result.append("Code analysis")
+        if "research" in normalized:
+            result.append("Research workflows")
+        if "automation" in normalized:
+            result.append("Automation pipelines")
+        if "browser" in normalized:
+            result.append("Browser workflows")
+        return result[:3]
+
+    @staticmethod
     def _build_dependency_payload(*, install_method: str, language: str, status: str) -> list[str]:
         method = str(install_method or "").strip().lower()
         language_label = str(language or "").strip().lower()
@@ -1857,6 +2688,243 @@ class HubStore:
         if str(status or "").strip().lower() == "needs_configuration":
             dependencies.append("Runtime secrets")
         return dependencies[:4]
+
+    @staticmethod
+    def _build_runtime_engine_payload(*, install_method: str, language: str) -> dict[str, str]:
+        method = str(install_method or "").strip().lower()
+        language_label = str(language or "").strip().lower()
+        if method in {"npm", "workspace_package", "monorepo"} or language_label == "node.js":
+            return {"label": "Node", "tone": "good"}
+        if method in {"python", "pip", "uv"} or language_label == "python":
+            return {"label": "Python", "tone": "good"}
+        if method == "docker" or language_label == "docker":
+            return {"label": "Docker", "tone": "warn"}
+        if method in {"remote", "http", "sse"} or language_label == "remote":
+            return {"label": "Remote/API", "tone": "warn"}
+        return {"label": "Other", "tone": "muted"}
+
+    @classmethod
+    def _matches_runtime_engine(cls, *, install_method: str, language: str, runtime: str) -> bool:
+        expected = str(runtime or "").strip().lower()
+        if not expected:
+            return True
+        engine = cls._build_runtime_engine_payload(install_method=install_method, language=language)
+        return str(engine.get("label", "")).strip().lower() == expected
+
+    @staticmethod
+    def _build_permission_hints_payload(
+        *,
+        install_method: str,
+        language: str,
+        status: str,
+        tags: list[str],
+        tools: list[str],
+    ) -> list[str]:
+        method = str(install_method or "").strip().lower()
+        language_label = str(language or "").strip().lower()
+        tags_lower = {str(item).strip().lower() for item in tags if str(item).strip()}
+        tools_lower = [str(item).strip().lower() for item in tools if str(item).strip()]
+        joined_tools = " ".join(tools_lower)
+
+        hints: list[str] = []
+
+        if method in {"remote", "http", "sse"} or language_label == "remote":
+            hints.append("Makes outbound network requests")
+
+        if method in {"npm", "workspace_package", "monorepo", "python", "pip", "uv", "docker"}:
+            hints.append("Runs local runtime processes")
+
+        if (
+            {"browser", "devtools", "playwright"} & tags_lower
+            or any(token in joined_tools for token in ["browser", "devtools", "playwright", "page", "screenshot"])
+        ):
+            hints.append("Controls browser or devtools runtime")
+
+        if any(token in joined_tools for token in ["read_file", "write_file", "workspace", "filesystem", "fs_"]):
+            hints.append("Can access local workspace files")
+
+        if str(status or "").strip().lower() == "needs_configuration":
+            hints.append("Needs secrets or API credentials")
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for hint in hints:
+            key = hint.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(hint)
+        return deduped[:4]
+
+    @staticmethod
+    def _build_mcp_type_payload(*, install_method: str, language: str) -> dict[str, Any]:
+        method = str(install_method or "").strip().lower()
+        language_label = str(language or "").strip().lower()
+        if method in {"remote", "http", "sse"} or language_label == "remote":
+            return {"label": "Remote MCP", "tone": "warn"}
+        if method == "docker" or language_label == "docker":
+            return {"label": "Hybrid MCP", "tone": "warn"}
+        return {"label": "Local MCP", "tone": "good"}
+
+    @staticmethod
+    def _build_install_confidence_payload(
+        *,
+        success_rate: float,
+        verified: bool,
+        recommendation: dict[str, Any] | None,
+        active_instances: int,
+        installs: int,
+        signal_count: int,
+        telemetry: dict[str, Any],
+    ) -> dict[str, Any]:
+        telemetry_runs = max(0, int(telemetry.get("run_count", signal_count) or 0))
+        telemetry_instances = max(0, int(telemetry.get("active_instances", active_instances) or 0))
+        target_runs = 1000
+        target_instances = 50
+        evidence_runs = max(telemetry_runs, min(max(0, int(installs or 0)), target_runs))
+        volume = min(1.0, math.log10(evidence_runs + 1) / math.log10(target_runs + 1))
+        diversity = min(1.0, telemetry_instances / target_instances) if target_instances else 0.0
+        base = 0.7 * volume + 0.3 * diversity
+        diversity_cap = 0.35 + (0.65 * diversity)
+        score = round(min(1.0, base, diversity_cap) * 10.0, 1)
+        if score >= 9.0:
+            label = "High confidence"
+            tone = "good"
+        elif score >= 7.5:
+            label = "Medium confidence"
+            tone = "warn"
+        else:
+            label = "Needs review"
+            tone = "bad"
+        evidence = max(
+            telemetry_instances,
+            int(recommendation.get("based_on_instances", 0) if isinstance(recommendation, dict) else 0),
+            max(int(active_instances or 0), 0),
+        )
+        return {
+            "score": score,
+            "label": label,
+            "tone": tone,
+            "based_on_instances": evidence,
+            "runs_30d": telemetry_runs,
+            "instances_30d": telemetry_instances,
+            "volume_score": round(volume, 4),
+            "diversity_score": round(diversity, 4),
+            "diversity_cap": round(min(1.0, diversity_cap), 4),
+        }
+
+    @staticmethod
+    def _build_trust_score_payload(
+        *,
+        success_rate: float,
+        install_confidence: dict[str, Any],
+        verified: bool,
+        telemetry: dict[str, Any],
+        recommendation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        confidence_norm = max(0.0, min(1.0, float(install_confidence.get("score", 0.0) or 0.0) / 10.0))
+        performance = HubStore._bayesian_success_score(
+            success_rate=float(success_rate or 0.0),
+            signal_count=max(0, int(telemetry.get("run_count", 0) or 0)),
+        ) * confidence_norm
+        consensus = float(telemetry.get("config_consensus", 0.0) or 0.0)
+        if consensus <= 0.0:
+            if isinstance(recommendation, dict) and recommendation:
+                consensus = 0.8 if verified else 0.7
+            else:
+                consensus = 0.7 if verified else 0.5
+        repair_opportunities = int(telemetry.get("repair_opportunities", 0) or 0)
+        repair_rate = float(telemetry.get("repair_rate", 0.0) or 0.0)
+        if repair_opportunities == 0:
+            repair_rate = 0.75 if verified else 0.65
+        verified_factor = 1.0 if verified else 0.0
+        score = round(
+            (
+                (0.4 * performance)
+                + (0.3 * max(0.0, min(1.0, consensus)))
+                + (0.2 * max(0.0, min(1.0, repair_rate)))
+                + (0.1 * verified_factor)
+            )
+            * 10.0,
+            1,
+        )
+        score = max(1.0, min(10.0, score))
+        if score >= 9.0:
+            label = "Trusted"
+            tone = "good"
+        elif score >= 7.5:
+            label = "Reviewable"
+            tone = "warn"
+        else:
+            label = "Experimental"
+            tone = "bad"
+        return {
+            "score": score,
+            "label": label,
+            "tone": tone,
+            "performance_component": round(performance, 4),
+            "config_consensus": round(max(0.0, min(1.0, consensus)), 4),
+            "repair_rate": round(max(0.0, min(1.0, repair_rate)), 4),
+            "verified_bonus": verified_factor,
+        }
+
+    def _build_usage_trend_payload(self, *, slug: str, telemetry: dict[str, Any], recent_runs: int) -> dict[str, Any]:
+        runs_24h = int(telemetry.get("runs_24h", 0) or 0)
+        runs_7d = int(telemetry.get("runs_7d", 0) or 0)
+        if runs_24h >= 5 or (runs_24h and recent_runs >= 10):
+            label = "Growing"
+            tone = "good"
+        elif runs_24h > 0:
+            label = "Observed"
+            tone = "warn"
+        else:
+            label = "Quiet"
+            tone = "muted"
+        return {
+            "runs_24h": runs_24h,
+            "runs_7d": runs_7d,
+            "label": label,
+            "tone": tone,
+        }
+
+    @staticmethod
+    def _bayesian_success_score(*, success_rate: float, signal_count: int, prior_mean: float = 0.78, prior_weight: float = 4.0) -> float:
+        signals = max(0, int(signal_count or 0))
+        observed_successes = float(success_rate or 0.0) * signals
+        return (observed_successes + prior_mean * prior_weight) / (signals + prior_weight) if (signals + prior_weight) else prior_mean
+
+    @staticmethod
+    def _build_network_health_payload(*, average_success_rate: float, average_latency_ms: float, runs_today: int) -> dict[str, Any]:
+        score = float(average_success_rate or 0.0) * 100.0
+        latency = float(average_latency_ms or 0.0)
+        if latency > 3000:
+            score -= 6.0
+        elif latency > 2200:
+            score -= 3.0
+        if runs_today < 5:
+            score -= 2.0
+        score = round(max(0.0, min(100.0, score)), 1)
+        if score >= 92.0:
+            label = "Healthy"
+            tone = "good"
+        elif score >= 80.0:
+            label = "Watch"
+            tone = "warn"
+        else:
+            label = "Fragile"
+            tone = "bad"
+        return {
+            "score": score,
+            "label": label,
+            "tone": tone,
+            "summary": (
+                "Community telemetry looks stable overall."
+                if tone == "good"
+                else "Some MCP combinations need closer review."
+                if tone == "warn"
+                else "The network is currently seeing elevated failure or latency signals."
+            ),
+        }
 
     @staticmethod
     def _build_mcp_difficulty_payload(*, install_method: str, verified: bool, status: str) -> dict[str, Any]:

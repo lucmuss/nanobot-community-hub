@@ -1,12 +1,18 @@
 {% extends "base.html" %}
 {% block body %}
-  <section class="page-header">
+  <section class="page-header" data-testid="hub-stack-detail-page">
     <div class="page-header-main">
       <div class="page-header-copy">
         <p class="eyebrow">Stack</p>
         <h2>{{ item.title }}</h2>
         <p class="muted">{{ item.description }}</p>
       </div>
+      {% if local_gui_url %}
+        <div class="page-header-actions">
+          <a class="button secondary" href="{{ local_gui_url }}/community/stacks/{{ item.slug }}">Open in local Nanobot</a>
+          <button class="secondary" type="button" onclick="copyHubValue('{{ local_gui_url }}/community/stacks/{{ item.slug }}', this)">Copy import URL</button>
+        </div>
+      {% endif %}
     </div>
     <div class="page-meta-bar">
       <span class="meta-chip"><strong>Use Case</strong>{{ item.use_case }}</span>
@@ -19,11 +25,18 @@
     <section class="panel">
       <p class="eyebrow">Included MCP Servers</p>
       <div class="flow-diagram" style="margin-bottom: 16px;">
-        {% for entry in item["items"] %}
-          <span class="flow-node">{{ entry.name }}</span>
+        {% for entry in item.diagram_nodes %}
+          <span class="flow-node">{{ entry }}</span>
           {% if not loop.last %}<span class="flow-arrow">→</span>{% endif %}
         {% endfor %}
       </div>
+      {% if item.best_for %}
+        <div class="tool-list" style="margin-bottom: 16px;">
+          {% for entry in item.best_for %}
+            <span class="tool-chip">{{ entry }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
       {% for entry in item["items"] %}
         <div class="stat-line">
           <span>{{ entry.name }}</span>

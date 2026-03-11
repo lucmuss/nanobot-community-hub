@@ -13,6 +13,13 @@
         <div class="meta-pair"><strong>Use Case</strong><span>{{ item.use_case }}</span></div>
         <div class="meta-pair"><strong>Recommended Model</strong><span>{{ item.stack.recommended_model if item.stack else "Not set" }}</span></div>
       </div>
+      {% if item.best_for %}
+        <div class="tool-list" style="margin-top: 12px;">
+          {% for entry in item.best_for %}
+            <span class="tool-chip">{{ entry }}</span>
+          {% endfor %}
+        </div>
+      {% endif %}
       {% if item.stack_items %}
         <div class="insight-panel community" style="margin-top: 14px;">
           <strong>Stack</strong>
@@ -27,6 +34,17 @@
       <div class="meta-pair" style="margin-top:14px;">
         <strong>Example Prompt</strong>
         <span>{{ item.example_prompt }}</span>
+      </div>
+      {% if item.demo_ready %}
+        <div class="page-meta-bar" style="margin-top: 14px;">
+          <span class="meta-chip good"><strong>Demo</strong>Ready to try in chat</span>
+        </div>
+      {% endif %}
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;flex-wrap:wrap;">
+        <a class="button secondary" href="/showcase/{{ item.slug }}">View Setup</a>
+        {% if local_gui_url and item.stack %}
+          <a class="button secondary" href="{{ local_gui_url }}/community/stacks/{{ item.stack.slug }}">Open in local Nanobot</a>
+        {% endif %}
       </div>
     </article>
   {% else %}

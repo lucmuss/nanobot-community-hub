@@ -78,6 +78,31 @@ The first admin is created once. After that, public users can browse discovery p
 - logged-in Hub admins
 - trusted service-to-service callers using `NANOBOT_HUB_API_TOKEN`
 
+## Runtime Settings Center
+
+The Hub admin page now includes a lightweight persistent runtime settings center.
+
+These values are stored in the Hub database so they survive container restarts and do not require a redeploy for every operational tweak.
+
+Current runtime settings:
+
+- `telemetry_ingest_enabled`
+- `api_token_writes_enabled`
+- `recommendation_mode`
+- `featured_min_trust_score`
+- `featured_min_signal_count`
+- `discover_cache_ttl_seconds`
+- `overview_cache_ttl_seconds`
+
+This keeps infrastructure-level configuration in environment variables, while allowing day-to-day operational tuning from the admin UI.
+
+Examples:
+
+- temporarily disable telemetry ingest without changing container env
+- disable service-token writes while keeping admin moderation access
+- switch recommendation behavior between a more `balanced` and more `conservative` profile
+- tune Discover and overview cache TTLs for larger registries
+
 ## Submission and Moderation Flow
 
 The Hub now supports controlled write flows for:
@@ -100,6 +125,92 @@ This keeps the first version small while still allowing:
 - a real public marketplace
 - admin-only curation
 - service-to-service publishing from trusted Nanobot GUI instances
+
+## Performance Notes
+
+The current V1 backend is still intentionally simple, but the hot paths are no longer purely per-item query driven.
+
+Current optimizations:
+
+- Discover results are cached for a short configurable TTL
+- overview stats are cached for a short configurable TTL
+- tools and recommendations are prefetched in batches for list pages
+- error clusters are built in grouped queries instead of one query per MCP card
+- cache invalidation is triggered automatically on submissions, moderation actions, install/import counters, and telemetry writes
+
+For the current V1 scale this keeps the Hub responsive without introducing Redis or a background worker yet.
+
+If the registry becomes much larger later, the next step should be materialized daily stats tables or a lightweight background aggregation job.
+
+## Recommendation Logic
+
+The Hub recommendation system is deliberately lightweight and explainable.
+
+Today it combines:
+
+- seeded recommended configs
+- recent telemetry profiles
+- Bayesian-smoothed success scoring
+- instance and run counts
+- latency penalties for unstable profiles
+
+The recommendation source can be:
+
+- `seed`
+- `telemetry`
+- a merged result when both sources exist
+
+This is not a full recommendation engine yet, but it is already much more stable than a naive "highest success rate wins" rule because it avoids over-trusting tiny sample sizes.
+
+## Community Metrics
+
+The Hub now treats the core marketplace signals as three separate metrics:
+
+- `Reliability`
+  - the smoothed success rate of MCP executions
+  - this answers: "How often does this MCP work?"
+- `Confidence`
+  - a community evidence score based on 30-day run volume and independent instance diversity
+  - this answers: "How much evidence do we have for this reliability number?"
+- `Trust Score`
+  - a broader quality score based on:
+    - performance
+    - config consensus
+    - repair rate
+    - verification status
+  - this answers: "How safe is this MCP as a real ecosystem building block?"
+
+Practical meaning:
+
+- a new MCP can show `100% reliability` but still have low `confidence`
+- a high `trust score` now requires more than raw success rate
+- single-instance local bias is penalized explicitly in the confidence model
+
+This keeps the marketplace from over-promoting brand new or fragile MCPs just because they worked in one local environment.
+
+## Ranking and Featured Lists
+
+Marketplace and overview lists are now more trust-aware than before.
+
+Examples:
+
+- `Most Reliable` is ranked primarily by `Trust Score`, then by reliability percent
+- `Trending` now favors recent usage, but still gives significant weight to trust
+- `Top MCPs` use the admin-configurable `featured_min_trust_score` threshold before falling back to the full registry
+
+This keeps discovery useful for developers who care more about dependable setups than about raw install counts alone.
+
+## Compatibility Graph
+
+The Hub now derives `Common Combinations` from two sources:
+
+- public stack co-occurrence
+- successful telemetry co-usage across independent instances
+
+This is still a lightweight V1 compatibility graph, but it is already stronger than a static curated list because it reflects both:
+
+- what people publish as public stacks
+- what people actually run together in practice
 
 ## GUI Integration
 

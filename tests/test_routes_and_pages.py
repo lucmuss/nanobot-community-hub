@@ -34,6 +34,8 @@ def test_setup_and_login_flow_renders_admin_page(client: TestClient) -> None:
     assert admin_page.status_code == 200
     assert "Controlled write flows and simple moderation" in admin_page.text
     assert "Current Error Hotspots" in admin_page.text
+    assert "Hub Operations" in admin_page.text
+    assert "Runtime Settings" in admin_page.text
 
     logout = client.post("/logout", follow_redirects=False)
     assert logout.status_code == 303
@@ -58,7 +60,9 @@ def test_discover_page_renders_seeded_content(client: TestClient) -> None:
     assert "Controlled submissions and moderation" in body
     assert "Create First Admin" in body
     assert "All languages" in body
+    assert "Any runtime" in body
     assert "Any reliability" in body
+    assert "Security and permissions" in body
 
 
 def test_discover_partial_respects_filters(client: TestClient) -> None:
@@ -85,18 +89,25 @@ def test_mcp_detail_page_renders_tools_and_issues(client: TestClient) -> None:
     assert "Chrome DevTools MCP" in body
     assert "Known Issues" in body
     assert "open_page" in body
-    assert "Error Clusters" in body
+    assert "Most Common Failures" in body
+    assert "Runs in 24h" in body
+    assert "Confidence" in body
+    assert "Trust Score" in body
+    assert "Common Combinations" in body
+    assert "Security and permissions" in body
 
 
 def test_stacks_pages_render_seeded_data(client: TestClient) -> None:
     list_response = client.get("/stacks")
     assert list_response.status_code == 200
     assert "GitHub Developer Stack" in list_response.text
+    assert "Code analysis" in list_response.text or "Research workflows" in list_response.text
 
     detail_response = client.get("/stacks/github-developer-stack")
     assert detail_response.status_code == 200
     assert "moonshot/kimi-k2.5" in detail_response.text
     assert "github-mcp-server" in detail_response.text
+    assert "Result" in detail_response.text
 
 
 def test_showcase_and_stats_pages_render_seeded_data(client: TestClient) -> None:
@@ -104,11 +115,63 @@ def test_showcase_and_stats_pages_render_seeded_data(client: TestClient) -> None
     assert showcase_response.status_code == 200
     assert "AI Research Assistant" in showcase_response.text
     assert "Repository Review Pilot" not in showcase_response.text
+    assert "Ready to try in chat" in showcase_response.text
+    assert "View Setup" in showcase_response.text
+
+    showcase_detail = client.get("/showcase/ai-research-assistant")
+    assert showcase_detail.status_code == 200
+    assert "Showcase Detail" in showcase_detail.text
+    assert "Stack Diagram" in showcase_detail.text
 
     stats_response = client.get("/community-stats")
     assert stats_response.status_code == 200
     assert "Community Stats" in stats_response.text
     assert "Tracked MCP servers" in stats_response.text
+    assert "Avg Success" in stats_response.text
+    assert "Top Categories" in stats_response.text
+    assert "Network Health" in stats_response.text
+    assert "Common Combinations" in stats_response.text
+
+
+def test_hub_pages_show_local_gui_bridge_when_default_gui_url_is_configured(client: TestClient) -> None:
+    _bootstrap_admin(client)
+
+    save = client.post(
+        "/admin/settings",
+        data={
+            "telemetry_ingest_enabled": "on",
+            "api_token_writes_enabled": "on",
+            "recommendation_mode": "balanced",
+            "featured_min_trust_score": "7.5",
+            "featured_min_signal_count": "3",
+            "discover_cache_ttl_seconds": "20",
+            "overview_cache_ttl_seconds": "30",
+            "default_gui_url": "https://nanobot-gui.kolibri-kollektiv.eu",
+        },
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
+
+    discover = client.get("/discover")
+    assert discover.status_code == 200
+    assert "Open in local Nanobot" in discover.text
+
+    detail = client.get("/mcp/context7")
+    assert detail.status_code == 200
+    assert "Open in local Nanobot" in detail.text
+    assert "Copy import URL" in detail.text
+
+    stack_detail = client.get("/stacks/github-developer-stack")
+    assert stack_detail.status_code == 200
+    assert "Open in local Nanobot" in stack_detail.text
+
+    showcase_detail = client.get("/showcase/ai-research-assistant")
+    assert showcase_detail.status_code == 200
+    assert "Open in local Nanobot" in showcase_detail.text
+
+    stats = client.get("/community-stats")
+    assert stats.status_code == 200
+    assert "Open in local Nanobot" in stats.text
 
 
 def test_admin_page_requires_login(client: TestClient) -> None:
@@ -176,5 +239,6 @@ def test_admin_can_submit_and_moderate_stack_and_showcase(client: TestClient) ->
 def test_missing_detail_routes_return_404(client: TestClient) -> None:
     assert client.get("/mcp/does-not-exist").status_code == 404
     assert client.get("/stacks/does-not-exist").status_code == 404
+    assert client.get("/showcase/does-not-exist").status_code == 404
     assert client.get("/api/v1/marketplace/does-not-exist").status_code == 404
     assert client.get("/api/v1/stacks/does-not-exist").status_code == 404

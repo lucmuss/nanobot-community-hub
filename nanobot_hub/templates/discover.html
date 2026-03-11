@@ -26,7 +26,7 @@
   </section>
 
   <section class="panel" style="margin-top: 24px;">
-    <form class="search-form" hx-get="/partials/discover-results" hx-target="#discover-results" hx-trigger="submit, keyup changed delay:300ms from:#discover-q, change from:#discover-category, change from:#discover-language, change from:#discover-min-reliability, change from:#discover-sort">
+    <form class="search-form" hx-get="/partials/discover-results" hx-target="#discover-results" hx-trigger="submit, keyup changed delay:300ms from:#discover-q, change from:#discover-category, change from:#discover-language, change from:#discover-runtime, change from:#discover-min-reliability, change from:#discover-sort">
       <div class="search-row">
         <input id="discover-q" type="text" name="q" value="{{ query }}" placeholder="Search MCP name, repo, or capability" data-testid="hub-discover-query">
         <select id="discover-category" name="category" data-testid="hub-discover-category">
@@ -39,6 +39,14 @@
           <option value="">All languages</option>
           {% for item in languages %}
             <option value="{{ item }}" {% if language == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="search-row">
+        <select id="discover-runtime" name="runtime" data-testid="hub-discover-runtime">
+          <option value="">Any runtime</option>
+          {% for item in runtime_options %}
+            <option value="{{ item }}" {% if runtime == item %}selected{% endif %}>{{ item }}</option>
           {% endfor %}
         </select>
         <select id="discover-min-reliability" name="min_reliability" data-testid="hub-discover-min-reliability">

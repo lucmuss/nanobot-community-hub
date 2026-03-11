@@ -35,7 +35,67 @@
   </section>
 
   <div class="panel-grid two" style="margin-bottom: 24px;">
-    <section class="panel">
+    <section class="panel" id="runtime-settings">
+      <p class="eyebrow">Hub Operations</p>
+      <div class="meta-grid">
+        <div class="meta-pair"><strong>Instance</strong><span>{{ ops_info.instance_name }}</span></div>
+        <div class="meta-pair"><strong>Database</strong><span>{{ ops_info.database_backend }}</span></div>
+        <div class="meta-pair"><strong>Public URL</strong><span>{{ ops_info.public_url or "Not configured" }}</span></div>
+        <div class="meta-pair"><strong>Default GUI URL</strong><span>{{ runtime_settings.default_gui_url or "Not configured" }}</span></div>
+        <div class="meta-pair"><strong>Write API</strong><span>{{ "Enabled" if ops_info.api_write_enabled else "Disabled" }}</span></div>
+        <div class="meta-pair"><strong>Admin Bootstrap</strong><span>{{ "Ready" if ops_info.has_admin else "Missing" }}</span></div>
+        <div class="meta-pair"><strong>Network Health</strong><span title="{{ ops_info.network_health.summary or '' }}">{{ ops_info.network_health.score or 0 }} · {{ ops_info.network_health.label or "Unknown" }}</span></div>
+      </div>
+    </section>
+
+    <section class="panel" id="publish-mcp">
+      <p class="eyebrow">Runtime Settings</p>
+      <p class="muted" style="margin-top: 0;">Persist the operational knobs that should survive restarts without editing env files for every change.</p>
+      <form method="post" action="/admin/settings" class="form-grid" data-testid="hub-admin-runtime-settings-form">
+        <div class="search-row" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+          <label><input type="checkbox" name="telemetry_ingest_enabled" {% if runtime_settings.telemetry_ingest_enabled %}checked{% endif %} data-testid="hub-admin-setting-telemetry-enabled"> Enable telemetry ingest</label>
+          <label><input type="checkbox" name="api_token_writes_enabled" {% if runtime_settings.api_token_writes_enabled %}checked{% endif %} data-testid="hub-admin-setting-api-writes-enabled"> Enable API token writes</label>
+        </div>
+        <div class="search-row" style="grid-template-columns: repeat(2, minmax(0, 1fr));">
+          <label>
+            Recommendation mode
+            <select name="recommendation_mode" data-testid="hub-admin-setting-recommendation-mode">
+              <option value="balanced" {% if runtime_settings.recommendation_mode == "balanced" %}selected{% endif %}>Balanced</option>
+              <option value="conservative" {% if runtime_settings.recommendation_mode == "conservative" %}selected{% endif %}>Conservative</option>
+            </select>
+          </label>
+          <label>
+            Featured minimum trust score
+            <input type="number" min="0" max="10" step="0.1" name="featured_min_trust_score" value="{{ runtime_settings.featured_min_trust_score }}" data-testid="hub-admin-setting-min-trust-score">
+          </label>
+        </div>
+        <div class="search-row" style="grid-template-columns: repeat(3, minmax(0, 1fr));">
+          <label>
+            Minimum telemetry signals
+            <input type="number" min="1" max="100" step="1" name="featured_min_signal_count" value="{{ runtime_settings.featured_min_signal_count }}" data-testid="hub-admin-setting-min-signals">
+          </label>
+          <label>
+            Discover cache TTL
+            <input type="number" min="5" max="600" step="1" name="discover_cache_ttl_seconds" value="{{ runtime_settings.discover_cache_ttl_seconds }}" data-testid="hub-admin-setting-discover-cache-ttl">
+          </label>
+          <label>
+            Overview cache TTL
+            <input type="number" min="5" max="600" step="1" name="overview_cache_ttl_seconds" value="{{ runtime_settings.overview_cache_ttl_seconds }}" data-testid="hub-admin-setting-overview-cache-ttl">
+          </label>
+        </div>
+        <label>
+          Default Nanobot GUI URL
+          <input type="url" name="default_gui_url" value="{{ runtime_settings.default_gui_url }}" placeholder="https://nanobot-gui.example.com" data-testid="hub-admin-setting-default-gui-url">
+        </label>
+        <div class="topbar-actions" style="justify-content: flex-start;">
+          <button type="submit" data-testid="hub-admin-save-runtime-settings">Save Runtime Settings</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <div class="panel-grid two" style="margin-bottom: 24px;">
+    <section class="panel" id="publish-stack">
       <p class="eyebrow">Submit MCP</p>
       <form method="post" action="/discover/submit-mcp" class="form-grid" data-testid="hub-admin-submit-mcp-form">
         <input type="url" name="repo_url" value="{{ mcp_form.repo_url }}" placeholder="https://github.com/owner/repo" required data-testid="hub-admin-submit-mcp-repo">
@@ -69,7 +129,7 @@
     </section>
   </div>
 
-  <section class="panel" style="margin-bottom: 24px;">
+  <section class="panel" id="publish-showcase" style="margin-bottom: 24px;">
     <p class="eyebrow">Submit Showcase</p>
     <form method="post" action="/admin/submit/showcase" class="form-grid" data-testid="hub-admin-submit-showcase-form">
       <div class="search-row" style="grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);">
@@ -92,7 +152,7 @@
     </form>
   </section>
 
-  <div class="moderation-grid">
+  <div class="moderation-grid" id="review-queue">
     <section class="panel">
       <p class="eyebrow">MCP Moderation</p>
       {% for item in mcp_queue %}
