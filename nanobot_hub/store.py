@@ -1,14 +1,33 @@
-"""SQLite-backed store for the community hub."""
+"""Database-backed store for the community hub."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import sqlite3
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    Float,
+    Integer,
+    MetaData,
+    String,
+    Table,
+    Text,
+    UniqueConstraint,
+    and_,
+    case,
+    create_engine,
+    func,
+    or_,
+    select,
+)
+from sqlalchemy.engine import Engine
 
 
 def _utc_now() -> str:
@@ -26,6 +45,130 @@ def _normalize_repo_url(value: str) -> str:
     return normalized.rstrip("/")
 
 
+metadata = MetaData()
+
+mcp_servers = Table(
+    "mcp_servers",
+    metadata,
+    Column("slug", String(255), primary_key=True),
+    Column("name", String(255), nullable=False),
+    Column("repo_url", Text, nullable=False),
+    Column("description", Text, nullable=False),
+    Column("category", String(120), nullable=False),
+    Column("language", String(120), nullable=False),
+    Column("tags_json", Text, nullable=False),
+    Column("install_method", String(120), nullable=False),
+    Column("verified", Boolean, nullable=False, default=False),
+    Column("status", String(120), nullable=False),
+    Column("active_instances", Integer, nullable=False, default=0),
+    Column("installs", Integer, nullable=False, default=0),
+    Column("success_rate", Float, nullable=False, default=0.0),
+    Column("avg_latency_ms", Float, nullable=False, default=0.0),
+    Column("created_at", String(40), nullable=False),
+    Column("updated_at", String(40), nullable=False),
+)
+
+mcp_tools = Table(
+    "mcp_tools",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("mcp_slug", String(255), nullable=False),
+    Column("tool_name", String(255), nullable=False),
+    UniqueConstraint("mcp_slug", "tool_name", name="uq_mcp_tools_slug_name"),
+)
+
+mcp_known_issues = Table(
+    "mcp_known_issues",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("mcp_slug", String(255), nullable=False),
+    Column("issue_text", Text, nullable=False),
+)
+
+mcp_recommended_configs = Table(
+    "mcp_recommended_configs",
+    metadata,
+    Column("mcp_slug", String(255), primary_key=True),
+    Column("transport", String(120), nullable=False),
+    Column("timeout", Integer, nullable=False),
+    Column("retries", Integer, nullable=False),
+    Column("confidence_score", Float, nullable=False),
+    Column("based_on_instances", Integer, nullable=False),
+    Column("updated_at", String(40), nullable=False),
+)
+
+telemetry_events = Table(
+    "telemetry_events",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("mcp_slug", String(255), nullable=False),
+    Column("version", String(120), nullable=False, default=""),
+    Column("success", Boolean, nullable=False),
+    Column("error_code", String(255), nullable=False, default=""),
+    Column("latency_ms", Integer, nullable=False, default=0),
+    Column("transport", String(120), nullable=False, default=""),
+    Column("timeout_bucket", String(120), nullable=False, default=""),
+    Column("retries", Integer, nullable=False, default=0),
+    Column("instance_hash", String(255), nullable=False),
+    Column("nanobot_version", String(120), nullable=False, default=""),
+    Column("created_at", String(40), nullable=False),
+)
+
+mcp_stacks = Table(
+    "mcp_stacks",
+    metadata,
+    Column("slug", String(255), primary_key=True),
+    Column("title", String(255), nullable=False),
+    Column("description", Text, nullable=False),
+    Column("use_case", Text, nullable=False),
+    Column("recommended_model", String(255), nullable=False),
+    Column("example_prompt", Text, nullable=False),
+    Column("rating", Float, nullable=False, default=0.0),
+    Column("imports_count", Integer, nullable=False, default=0),
+    Column("created_at", String(40), nullable=False),
+)
+
+mcp_stack_items = Table(
+    "mcp_stack_items",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("stack_slug", String(255), nullable=False),
+    Column("mcp_slug", String(255), nullable=False),
+    Column("required", Boolean, nullable=False, default=True),
+    Column("sort_order", Integer, nullable=False, default=0),
+)
+
+showcase_entries = Table(
+    "showcase_entries",
+    metadata,
+    Column("slug", String(255), primary_key=True),
+    Column("title", String(255), nullable=False),
+    Column("description", Text, nullable=False),
+    Column("category", String(120), nullable=False),
+    Column("example_prompt", Text, nullable=False),
+    Column("stack_slug", String(255), nullable=False),
+    Column("imports_count", Integer, nullable=False, default=0),
+    Column("upvotes_count", Integer, nullable=False, default=0),
+    Column("created_at", String(40), nullable=False),
+)
+
+mcp_submissions = Table(
+    "mcp_submissions",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("proposed_slug", String(255), nullable=False, default=""),
+    Column("published_slug", String(255), nullable=False, default=""),
+    Column("repo_url", Text, nullable=False),
+    Column("name", String(255), nullable=False),
+    Column("submitted_by", String(255), nullable=False, default=""),
+    Column("source_instance", String(255), nullable=False, default=""),
+    Column("source_public_url", Text, nullable=False, default=""),
+    Column("status", String(120), nullable=False),
+    Column("details_json", Text, nullable=False, default="{}"),
+    Column("submitted_at", String(40), nullable=False),
+)
+
+
 SEED_MCPS: list[dict[str, Any]] = [
     {
         "slug": "chrome-devtools-mcp",
@@ -36,7 +179,7 @@ SEED_MCPS: list[dict[str, Any]] = [
         "language": "Node.js",
         "tags": ["browser", "debugging", "devtools", "automation"],
         "install_method": "npm",
-        "verified": 1,
+        "verified": True,
         "status": "active",
         "active_instances": 1820,
         "installs": 12640,
@@ -64,7 +207,7 @@ SEED_MCPS: list[dict[str, Any]] = [
         "language": "Remote",
         "tags": ["docs", "search", "retrieval", "research"],
         "install_method": "remote",
-        "verified": 1,
+        "verified": True,
         "status": "active",
         "active_instances": 2410,
         "installs": 15110,
@@ -91,7 +234,7 @@ SEED_MCPS: list[dict[str, Any]] = [
         "language": "Node.js",
         "tags": ["browser", "playwright", "testing", "automation"],
         "install_method": "workspace_package",
-        "verified": 1,
+        "verified": True,
         "status": "active",
         "active_instances": 1690,
         "installs": 9440,
@@ -119,7 +262,7 @@ SEED_MCPS: list[dict[str, Any]] = [
         "language": "Node.js",
         "tags": ["crawl", "extract", "web", "research"],
         "install_method": "npm",
-        "verified": 1,
+        "verified": True,
         "status": "needs_configuration",
         "active_instances": 910,
         "installs": 6220,
@@ -146,7 +289,7 @@ SEED_MCPS: list[dict[str, Any]] = [
         "language": "Remote",
         "tags": ["github", "repos", "issues", "pull-requests"],
         "install_method": "remote",
-        "verified": 1,
+        "verified": True,
         "status": "needs_configuration",
         "active_instances": 2030,
         "installs": 11880,
@@ -174,7 +317,7 @@ SEED_MCPS: list[dict[str, Any]] = [
         "language": "Node.js",
         "tags": ["image", "generation", "openai", "media"],
         "install_method": "npm",
-        "verified": 0,
+        "verified": False,
         "status": "needs_configuration",
         "active_instances": 340,
         "installs": 1890,
@@ -244,237 +387,139 @@ SEED_SHOWCASE: list[dict[str, Any]] = [
     },
 ]
 
+_GITHUB_REPO_RE = re.compile(r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^/]+)$", re.IGNORECASE)
+_SECRET_RE = re.compile(
+    r"(sk-[A-Za-z0-9_\-]{12,}|ghp_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]+|fc-[A-Za-z0-9]{12,}|AIza[0-9A-Za-z\-_]{20,}|Bearer\s+[A-Za-z0-9._\-]+)",
+    re.IGNORECASE,
+)
+
 
 @dataclass(slots=True)
 class HubStore:
-    db_path: Path
+    database_url: str
+    engine: Engine = field(init=False, repr=False)
+    backend: str = field(init=False)
 
-    def connect(self) -> sqlite3.Connection:
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def __post_init__(self) -> None:
+        database_url = str(self.database_url or "").strip()
+        if not database_url:
+            raise ValueError("database_url is required.")
+        self.backend = "postgresql" if database_url.startswith("postgresql") else "sqlite"
+        if self.backend == "sqlite":
+            self._ensure_sqlite_parent(database_url)
+        self.engine = create_engine(
+            database_url,
+            future=True,
+            pool_pre_ping=True,
+            connect_args={"check_same_thread": False} if self.backend == "sqlite" else {},
+        )
 
     def init(self) -> None:
-        with self.connect() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS mcp_servers (
-                    slug TEXT PRIMARY KEY,
-                    name TEXT NOT NULL,
-                    repo_url TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    language TEXT NOT NULL,
-                    tags_json TEXT NOT NULL,
-                    install_method TEXT NOT NULL,
-                    verified INTEGER NOT NULL DEFAULT 0,
-                    status TEXT NOT NULL,
-                    active_instances INTEGER NOT NULL DEFAULT 0,
-                    installs INTEGER NOT NULL DEFAULT 0,
-                    success_rate REAL NOT NULL DEFAULT 0.0,
-                    avg_latency_ms REAL NOT NULL DEFAULT 0.0,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS mcp_tools (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mcp_slug TEXT NOT NULL,
-                    tool_name TEXT NOT NULL,
-                    UNIQUE(mcp_slug, tool_name)
-                );
-
-                CREATE TABLE IF NOT EXISTS mcp_known_issues (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mcp_slug TEXT NOT NULL,
-                    issue_text TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS mcp_recommended_configs (
-                    mcp_slug TEXT PRIMARY KEY,
-                    transport TEXT NOT NULL,
-                    timeout INTEGER NOT NULL,
-                    retries INTEGER NOT NULL,
-                    confidence_score REAL NOT NULL,
-                    based_on_instances INTEGER NOT NULL,
-                    updated_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS telemetry_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    mcp_slug TEXT NOT NULL,
-                    version TEXT NOT NULL DEFAULT '',
-                    success INTEGER NOT NULL,
-                    error_code TEXT NOT NULL DEFAULT '',
-                    latency_ms INTEGER NOT NULL DEFAULT 0,
-                    transport TEXT NOT NULL DEFAULT '',
-                    timeout_bucket TEXT NOT NULL DEFAULT '',
-                    retries INTEGER NOT NULL DEFAULT 0,
-                    instance_hash TEXT NOT NULL,
-                    nanobot_version TEXT NOT NULL DEFAULT '',
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS mcp_stacks (
-                    slug TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    use_case TEXT NOT NULL,
-                    recommended_model TEXT NOT NULL,
-                    example_prompt TEXT NOT NULL,
-                    rating REAL NOT NULL DEFAULT 0,
-                    imports_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-
-                CREATE TABLE IF NOT EXISTS mcp_stack_items (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    stack_slug TEXT NOT NULL,
-                    mcp_slug TEXT NOT NULL,
-                    required INTEGER NOT NULL DEFAULT 1,
-                    sort_order INTEGER NOT NULL DEFAULT 0
-                );
-
-                CREATE TABLE IF NOT EXISTS showcase_entries (
-                    slug TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    description TEXT NOT NULL,
-                    category TEXT NOT NULL,
-                    example_prompt TEXT NOT NULL,
-                    stack_slug TEXT NOT NULL,
-                    imports_count INTEGER NOT NULL DEFAULT 0,
-                    upvotes_count INTEGER NOT NULL DEFAULT 0,
-                    created_at TEXT NOT NULL
-                );
-                """
-            )
-            count = conn.execute("SELECT COUNT(*) FROM mcp_servers").fetchone()[0]
-            if count == 0:
+        metadata.create_all(self.engine)
+        with self.engine.begin() as conn:
+            count = conn.execute(select(func.count()).select_from(mcp_servers)).scalar_one()
+            if int(count or 0) == 0:
                 self._seed(conn)
 
-    def _seed(self, conn: sqlite3.Connection) -> None:
+    def _seed(self, conn) -> None:
         now = _utc_now()
         for entry in SEED_MCPS:
             conn.execute(
-                """
-                INSERT INTO mcp_servers (
-                    slug, name, repo_url, description, category, language, tags_json,
-                    install_method, verified, status, active_instances, installs,
-                    success_rate, avg_latency_ms, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry["slug"],
-                    entry["name"],
-                    entry["repo_url"],
-                    entry["description"],
-                    entry["category"],
-                    entry["language"],
-                    json.dumps(entry["tags"]),
-                    entry["install_method"],
-                    entry["verified"],
-                    entry["status"],
-                    entry["active_instances"],
-                    entry["installs"],
-                    entry["success_rate"],
-                    entry["avg_latency_ms"],
-                    now,
-                    now,
-                ),
+                mcp_servers.insert().values(
+                    slug=entry["slug"],
+                    name=entry["name"],
+                    repo_url=entry["repo_url"],
+                    description=entry["description"],
+                    category=entry["category"],
+                    language=entry["language"],
+                    tags_json=json.dumps(entry["tags"]),
+                    install_method=entry["install_method"],
+                    verified=bool(entry["verified"]),
+                    status=entry["status"],
+                    active_instances=int(entry["active_instances"]),
+                    installs=int(entry["installs"]),
+                    success_rate=float(entry["success_rate"]),
+                    avg_latency_ms=float(entry["avg_latency_ms"]),
+                    created_at=now,
+                    updated_at=now,
+                )
             )
             for tool_name in entry["tools"]:
-                conn.execute(
-                    "INSERT INTO mcp_tools (mcp_slug, tool_name) VALUES (?, ?)",
-                    (entry["slug"], tool_name),
-                )
-            for issue in entry["known_issues"]:
-                conn.execute(
-                    "INSERT INTO mcp_known_issues (mcp_slug, issue_text) VALUES (?, ?)",
-                    (entry["slug"], issue),
-                )
+                conn.execute(mcp_tools.insert().values(mcp_slug=entry["slug"], tool_name=tool_name))
+            for issue_text in entry["known_issues"]:
+                conn.execute(mcp_known_issues.insert().values(mcp_slug=entry["slug"], issue_text=issue_text))
             recommendation = entry["recommended_config"]
             conn.execute(
-                """
-                INSERT INTO mcp_recommended_configs (
-                    mcp_slug, transport, timeout, retries, confidence_score,
-                    based_on_instances, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    entry["slug"],
-                    recommendation["transport"],
-                    recommendation["timeout"],
-                    recommendation["retries"],
-                    recommendation["confidence_score"],
-                    recommendation["based_on_instances"],
-                    now,
-                ),
+                mcp_recommended_configs.insert().values(
+                    mcp_slug=entry["slug"],
+                    transport=recommendation["transport"],
+                    timeout=int(recommendation["timeout"]),
+                    retries=int(recommendation["retries"]),
+                    confidence_score=float(recommendation["confidence_score"]),
+                    based_on_instances=int(recommendation["based_on_instances"]),
+                    updated_at=now,
+                )
             )
 
         for stack in SEED_STACKS:
             conn.execute(
-                """
-                INSERT INTO mcp_stacks (
-                    slug, title, description, use_case, recommended_model,
-                    example_prompt, rating, imports_count, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    stack["slug"],
-                    stack["title"],
-                    stack["description"],
-                    stack["use_case"],
-                    stack["recommended_model"],
-                    stack["example_prompt"],
-                    stack["rating"],
-                    stack["imports_count"],
-                    now,
-                ),
+                mcp_stacks.insert().values(
+                    slug=stack["slug"],
+                    title=stack["title"],
+                    description=stack["description"],
+                    use_case=stack["use_case"],
+                    recommended_model=stack["recommended_model"],
+                    example_prompt=stack["example_prompt"],
+                    rating=float(stack["rating"]),
+                    imports_count=int(stack["imports_count"]),
+                    created_at=now,
+                )
             )
             for index, item_slug in enumerate(stack["items"]):
                 conn.execute(
-                    """
-                    INSERT INTO mcp_stack_items (stack_slug, mcp_slug, required, sort_order)
-                    VALUES (?, ?, 1, ?)
-                    """,
-                    (stack["slug"], item_slug, index),
+                    mcp_stack_items.insert().values(
+                        stack_slug=stack["slug"],
+                        mcp_slug=item_slug,
+                        required=True,
+                        sort_order=index,
+                    )
                 )
 
         for showcase in SEED_SHOWCASE:
             conn.execute(
-                """
-                INSERT INTO showcase_entries (
-                    slug, title, description, category, example_prompt,
-                    stack_slug, imports_count, upvotes_count, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    showcase["slug"],
-                    showcase["title"],
-                    showcase["description"],
-                    showcase["category"],
-                    showcase["example_prompt"],
-                    showcase["stack_slug"],
-                    showcase["imports_count"],
-                    showcase["upvotes_count"],
-                    now,
-                ),
+                showcase_entries.insert().values(
+                    slug=showcase["slug"],
+                    title=showcase["title"],
+                    description=showcase["description"],
+                    category=showcase["category"],
+                    example_prompt=showcase["example_prompt"],
+                    stack_slug=showcase["stack_slug"],
+                    imports_count=int(showcase["imports_count"]),
+                    upvotes_count=int(showcase["upvotes_count"]),
+                    created_at=now,
+                )
             )
 
     def list_mcps(self, *, search: str = "", category: str = "", sort: str = "trending") -> list[dict[str, Any]]:
         telemetry = self._telemetry_stats_by_slug()
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM mcp_servers
-                WHERE (? = '' OR lower(name) LIKE '%' || lower(?) || '%' OR lower(description) LIKE '%' || lower(?) || '%' OR lower(repo_url) LIKE '%' || lower(?) || '%')
-                  AND (? = '' OR category = ?)
-                """,
-                (search, search, search, search, category, category),
-            ).fetchall()
-            items = [self._build_mcp_summary(conn, row, telemetry.get(row["slug"], {})) for row in rows]
+        with self.engine.connect() as conn:
+            stmt = select(mcp_servers)
+            conditions = []
+            if search:
+                query = f"%{search.lower()}%"
+                conditions.append(
+                    or_(
+                        func.lower(mcp_servers.c.name).like(query),
+                        func.lower(mcp_servers.c.description).like(query),
+                        func.lower(mcp_servers.c.repo_url).like(query),
+                    )
+                )
+            if category:
+                conditions.append(mcp_servers.c.category == category)
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
+            rows = conn.execute(stmt).mappings().all()
+            items = [self._build_mcp_summary(conn, row, telemetry.get(str(row["slug"]), {})) for row in rows]
 
         sort_key = str(sort or "trending").lower()
         if sort_key == "new":
@@ -492,40 +537,44 @@ class HubStore:
 
     def get_mcp(self, slug: str) -> dict[str, Any] | None:
         telemetry = self._telemetry_stats_by_slug().get(slug, {})
-        with self.connect() as conn:
-            row = conn.execute("SELECT * FROM mcp_servers WHERE slug = ?", (slug,)).fetchone()
+        with self.engine.connect() as conn:
+            row = conn.execute(select(mcp_servers).where(mcp_servers.c.slug == slug)).mappings().first()
             if row is None:
                 return None
             item = self._build_mcp_summary(conn, row, telemetry, detailed=True)
             recommendation = conn.execute(
-                "SELECT * FROM mcp_recommended_configs WHERE mcp_slug = ?",
-                (slug,),
-            ).fetchone()
+                select(mcp_recommended_configs).where(mcp_recommended_configs.c.mcp_slug == slug)
+            ).mappings().first()
             item["recommended_config"] = dict(recommendation) if recommendation else None
-            item["known_issues"] = [
-                issue["issue_text"]
-                for issue in conn.execute(
-                    "SELECT issue_text FROM mcp_known_issues WHERE mcp_slug = ? ORDER BY id ASC",
-                    (slug,),
-                ).fetchall()
-            ]
+            issue_rows = conn.execute(
+                select(mcp_known_issues.c.issue_text)
+                .where(mcp_known_issues.c.mcp_slug == slug)
+                .order_by(mcp_known_issues.c.id.asc())
+            ).all()
+            item["known_issues"] = [str(issue[0]) for issue in issue_rows]
             return item
 
     def resolve_repo(self, repo_url: str) -> dict[str, Any] | None:
         normalized = _normalize_repo_url(repo_url)
         if not normalized:
             return None
-        with self.connect() as conn:
+        with self.engine.connect() as conn:
             row = conn.execute(
-                "SELECT slug, name, repo_url FROM mcp_servers WHERE repo_url = ?",
-                (normalized,),
-            ).fetchone()
+                select(mcp_servers.c.slug, mcp_servers.c.name, mcp_servers.c.repo_url).where(
+                    mcp_servers.c.repo_url == normalized
+                )
+            ).mappings().first()
             if row is None:
                 return None
             recommendation = conn.execute(
-                "SELECT transport, timeout, retries, confidence_score, based_on_instances FROM mcp_recommended_configs WHERE mcp_slug = ?",
-                (row["slug"],),
-            ).fetchone()
+                select(
+                    mcp_recommended_configs.c.transport,
+                    mcp_recommended_configs.c.timeout,
+                    mcp_recommended_configs.c.retries,
+                    mcp_recommended_configs.c.confidence_score,
+                    mcp_recommended_configs.c.based_on_instances,
+                ).where(mcp_recommended_configs.c.mcp_slug == str(row["slug"]))
+            ).mappings().first()
             return {
                 "slug": row["slug"],
                 "name": row["name"],
@@ -534,43 +583,50 @@ class HubStore:
             }
 
     def list_stacks(self, *, search: str = "") -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM mcp_stacks
-                WHERE (? = '' OR lower(title) LIKE '%' || lower(?) || '%' OR lower(description) LIKE '%' || lower(?) || '%')
-                ORDER BY rating DESC, imports_count DESC
-                """,
-                (search, search, search),
-            ).fetchall()
+        with self.engine.connect() as conn:
+            stmt = select(mcp_stacks)
+            if search:
+                query = f"%{search.lower()}%"
+                stmt = stmt.where(
+                    or_(
+                        func.lower(mcp_stacks.c.title).like(query),
+                        func.lower(mcp_stacks.c.description).like(query),
+                    )
+                )
+            stmt = stmt.order_by(mcp_stacks.c.rating.desc(), mcp_stacks.c.imports_count.desc())
+            rows = conn.execute(stmt).mappings().all()
             return [self._build_stack_summary(conn, row) for row in rows]
 
     def get_stack(self, slug: str) -> dict[str, Any] | None:
-        with self.connect() as conn:
-            row = conn.execute("SELECT * FROM mcp_stacks WHERE slug = ?", (slug,)).fetchone()
+        with self.engine.connect() as conn:
+            row = conn.execute(select(mcp_stacks).where(mcp_stacks.c.slug == slug)).mappings().first()
             if row is None:
                 return None
             return self._build_stack_summary(conn, row, detailed=True)
 
     def list_showcase(self, *, search: str = "", category: str = "") -> list[dict[str, Any]]:
-        with self.connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM showcase_entries
-                WHERE (? = '' OR lower(title) LIKE '%' || lower(?) || '%' OR lower(description) LIKE '%' || lower(?) || '%')
-                  AND (? = '' OR category = ?)
-                ORDER BY imports_count DESC, upvotes_count DESC
-                """,
-                (search, search, search, category, category),
-            ).fetchall()
+        with self.engine.connect() as conn:
+            stmt = select(showcase_entries)
+            conditions = []
+            if search:
+                query = f"%{search.lower()}%"
+                conditions.append(
+                    or_(
+                        func.lower(showcase_entries.c.title).like(query),
+                        func.lower(showcase_entries.c.description).like(query),
+                    )
+                )
+            if category:
+                conditions.append(showcase_entries.c.category == category)
+            if conditions:
+                stmt = stmt.where(and_(*conditions))
+            stmt = stmt.order_by(showcase_entries.c.imports_count.desc(), showcase_entries.c.upvotes_count.desc())
+            rows = conn.execute(stmt).mappings().all()
             items: list[dict[str, Any]] = []
             for row in rows:
                 stack_row = conn.execute(
-                    "SELECT slug, title FROM mcp_stacks WHERE slug = ?",
-                    (row["stack_slug"],),
-                ).fetchone()
+                    select(mcp_stacks.c.slug, mcp_stacks.c.title).where(mcp_stacks.c.slug == row["stack_slug"])
+                ).mappings().first()
                 items.append(
                     {
                         **dict(row),
@@ -583,17 +639,18 @@ class HubStore:
         telemetry = self._telemetry_stats_by_slug()
         marketplace = self.list_mcps()
         today_start = datetime.now(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
-        with self.connect() as conn:
+        with self.engine.connect() as conn:
             total_events_today = conn.execute(
-                "SELECT COUNT(*) FROM telemetry_events WHERE created_at >= ?",
-                (today_start.isoformat(timespec="seconds"),),
-            ).fetchone()[0]
-        active_instances = sum(item["active_instances"] for item in marketplace)
+                select(func.count()).select_from(telemetry_events).where(
+                    telemetry_events.c.created_at >= today_start.isoformat(timespec="seconds")
+                )
+            ).scalar_one()
+        active_instances = sum(int(item["active_instances"]) for item in marketplace)
         return {
             "registry_count": len(marketplace),
             "verified_count": sum(1 for item in marketplace if item["verified"]),
             "active_instances": active_instances,
-            "runs_today": int(total_events_today),
+            "runs_today": int(total_events_today or 0),
             "top_mcps": marketplace[:5],
             "telemetry_active": bool(telemetry),
         }
@@ -605,31 +662,26 @@ class HubStore:
         instance_raw = str(payload.get("instance_hash", "")).strip() or "anonymous"
         instance_hash = hashlib.sha256(instance_raw.encode("utf-8")).hexdigest()[:16]
         created_at = str(payload.get("created_at", "")).strip() or _utc_now()
-        with self.connect() as conn:
-            exists = conn.execute("SELECT 1 FROM mcp_servers WHERE slug = ?", (slug,)).fetchone()
+        with self.engine.begin() as conn:
+            exists = conn.execute(
+                select(mcp_servers.c.slug).where(mcp_servers.c.slug == slug)
+            ).scalar_one_or_none()
             if exists is None:
                 raise ValueError(f"Unknown MCP slug: {slug}")
             conn.execute(
-                """
-                INSERT INTO telemetry_events (
-                    mcp_slug, version, success, error_code, latency_ms,
-                    transport, timeout_bucket, retries, instance_hash,
-                    nanobot_version, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    slug,
-                    str(payload.get("version", "")),
-                    1 if bool(payload.get("success")) else 0,
-                    str(payload.get("error_code", "")),
-                    int(payload.get("latency_ms", 0) or 0),
-                    str(payload.get("transport", "")),
-                    str(payload.get("timeout_bucket", "")),
-                    int(payload.get("retries", 0) or 0),
-                    instance_hash,
-                    str(payload.get("nanobot_version", "")),
-                    created_at,
-                ),
+                telemetry_events.insert().values(
+                    mcp_slug=slug,
+                    version=str(payload.get("version", "")),
+                    success=bool(payload.get("success")),
+                    error_code=str(payload.get("error_code", "")),
+                    latency_ms=int(payload.get("latency_ms", 0) or 0),
+                    transport=str(payload.get("transport", "")),
+                    timeout_bucket=str(payload.get("timeout_bucket", "")),
+                    retries=int(payload.get("retries", 0) or 0),
+                    instance_hash=instance_hash,
+                    nanobot_version=str(payload.get("nanobot_version", "")),
+                    created_at=created_at,
+                )
             )
         return {
             "mcp_slug": slug,
@@ -637,34 +689,182 @@ class HubStore:
             "created_at": created_at,
         }
 
+    def submit_mcp_submission(self, payload: dict[str, Any]) -> dict[str, Any]:
+        repo_url = _normalize_repo_url(payload.get("repo_url", ""))
+        match = _GITHUB_REPO_RE.match(repo_url)
+        if not match:
+            raise ValueError("Only GitHub repository URLs are supported for community MCP submissions.")
+
+        proposed_slug = self._normalize_submission_slug(str(payload.get("slug", "")).strip())
+        repo_name = match.group("repo")
+        owner_name = match.group("owner")
+        name = str(payload.get("name", "")).strip() or repo_name.replace("-", " ").replace("_", " ").title()
+        description = str(payload.get("description", "")).strip() or "Community-submitted MCP server."
+        category = str(payload.get("category", "")).strip() or self._infer_category(payload)
+        install_method = str(payload.get("install_method", "")).strip() or self._infer_install_method(payload)
+        language = str(payload.get("language", "")).strip() or self._infer_language(install_method)
+        submitted_by = str(payload.get("submitted_by", "")).strip()
+        source_instance = str(payload.get("source_instance", "")).strip()
+        source_public_url = str(payload.get("source_public_url", "")).strip()
+        tags = self._normalize_text_list(payload.get("tags", []))
+        tools = self._normalize_text_list(payload.get("tools", []))
+        known_issues = self._normalize_text_list(payload.get("known_issues", []))
+
+        self._guard_submission_text(repo_url, name, description, submitted_by, source_instance, source_public_url, *tags, *tools, *known_issues)
+
+        now = _utc_now()
+        with self.engine.begin() as conn:
+            existing = conn.execute(
+                select(mcp_servers.c.slug).where(mcp_servers.c.repo_url == repo_url)
+            ).mappings().first()
+            if existing is not None:
+                submission = self._insert_submission(
+                    conn,
+                    proposed_slug=proposed_slug,
+                    published_slug=str(existing["slug"]),
+                    repo_url=repo_url,
+                    name=name,
+                    submitted_by=submitted_by,
+                    source_instance=source_instance,
+                    source_public_url=source_public_url,
+                    status="duplicate",
+                    details={
+                        "category": category,
+                        "install_method": install_method,
+                        "language": language,
+                        "tags": tags,
+                        "tools": tools,
+                        "known_issues": known_issues,
+                    },
+                    submitted_at=now,
+                )
+                item = self.get_mcp(str(existing["slug"]))
+                return {
+                    "created": False,
+                    "duplicate": True,
+                    "submission": submission,
+                    "item": item,
+                }
+
+            slug = self._allocate_submission_slug(conn, repo_url, proposed_slug, owner_name=owner_name, repo_name=repo_name)
+            conn.execute(
+                mcp_servers.insert().values(
+                    slug=slug,
+                    name=name,
+                    repo_url=repo_url,
+                    description=description,
+                    category=category,
+                    language=language,
+                    tags_json=json.dumps(tags),
+                    install_method=install_method,
+                    verified=False,
+                    status="submitted",
+                    active_instances=0,
+                    installs=0,
+                    success_rate=0.0,
+                    avg_latency_ms=0.0,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            for tool_name in tools:
+                conn.execute(mcp_tools.insert().values(mcp_slug=slug, tool_name=tool_name))
+            for issue_text in known_issues:
+                conn.execute(mcp_known_issues.insert().values(mcp_slug=slug, issue_text=issue_text))
+
+            recommendation = payload.get("recommended_config")
+            if isinstance(recommendation, dict) and recommendation:
+                transport = str(recommendation.get("transport", "")).strip()
+                timeout = int(recommendation.get("timeout", 0) or 0)
+                retries = int(recommendation.get("retries", 0) or 0)
+                confidence = float(recommendation.get("confidence_score", 0.0) or 0.0)
+                based_on_instances = int(recommendation.get("based_on_instances", 0) or 0)
+                if transport and timeout > 0:
+                    conn.execute(
+                        mcp_recommended_configs.insert().values(
+                            mcp_slug=slug,
+                            transport=transport,
+                            timeout=timeout,
+                            retries=max(0, retries),
+                            confidence_score=max(0.0, confidence),
+                            based_on_instances=max(0, based_on_instances),
+                            updated_at=now,
+                        )
+                    )
+
+            submission = self._insert_submission(
+                conn,
+                proposed_slug=proposed_slug,
+                published_slug=slug,
+                repo_url=repo_url,
+                name=name,
+                submitted_by=submitted_by,
+                source_instance=source_instance,
+                source_public_url=source_public_url,
+                status="published",
+                details={
+                    "description": description,
+                    "category": category,
+                    "install_method": install_method,
+                    "language": language,
+                    "tags": tags,
+                    "tools": tools,
+                    "known_issues": known_issues,
+                },
+                submitted_at=now,
+            )
+
+        item = self.get_mcp(slug)
+        return {
+            "created": True,
+            "duplicate": False,
+            "submission": submission,
+            "item": item,
+        }
+
     def categories(self) -> list[str]:
-        return sorted({entry["category"] for entry in SEED_MCPS})
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(mcp_servers.c.category).distinct().order_by(mcp_servers.c.category.asc())
+            ).all()
+            return [str(row[0]) for row in rows]
 
     def showcase_categories(self) -> list[str]:
-        return sorted({entry["category"] for entry in SEED_SHOWCASE})
+        with self.engine.connect() as conn:
+            rows = conn.execute(
+                select(showcase_entries.c.category).distinct().order_by(showcase_entries.c.category.asc())
+            ).all()
+            return [str(row[0]) for row in rows]
 
     def _build_mcp_summary(
         self,
-        conn: sqlite3.Connection,
-        row: sqlite3.Row,
+        conn,
+        row: dict[str, Any],
         telemetry: dict[str, Any],
         *,
         detailed: bool = False,
     ) -> dict[str, Any]:
-        tools = [
-            tool["tool_name"]
-            for tool in conn.execute(
-                "SELECT tool_name FROM mcp_tools WHERE mcp_slug = ? ORDER BY tool_name ASC",
-                (row["slug"],),
-            ).fetchall()
-        ]
+        tool_rows = conn.execute(
+            select(mcp_tools.c.tool_name)
+            .where(mcp_tools.c.mcp_slug == row["slug"])
+            .order_by(mcp_tools.c.tool_name.asc())
+        ).all()
+        tools = [str(tool[0]) for tool in tool_rows]
         effective_active = max(int(row["active_instances"]), int(telemetry.get("active_instances", 0) or 0))
-        effective_success = float(telemetry.get("success_rate")) if telemetry.get("run_count", 0) >= 3 else float(row["success_rate"])
-        effective_latency = float(telemetry.get("avg_latency_ms")) if telemetry.get("run_count", 0) >= 3 else float(row["avg_latency_ms"])
+        effective_success = (
+            float(telemetry.get("success_rate"))
+            if telemetry.get("run_count", 0) >= 3
+            else float(row["success_rate"])
+        )
+        effective_latency = (
+            float(telemetry.get("avg_latency_ms"))
+            if telemetry.get("run_count", 0) >= 3
+            else float(row["avg_latency_ms"])
+        )
         summary = {
             **dict(row),
-            "repo_url": _normalize_repo_url(row["repo_url"]),
-            "tags": json.loads(row["tags_json"]),
+            "repo_url": _normalize_repo_url(str(row["repo_url"])),
+            "tags": json.loads(str(row["tags_json"])),
             "tools": tools,
             "tool_count": len(tools),
             "active_instances": effective_active,
@@ -680,21 +880,19 @@ class HubStore:
 
     def _build_stack_summary(
         self,
-        conn: sqlite3.Connection,
-        row: sqlite3.Row,
+        conn,
+        row: dict[str, Any],
         *,
         detailed: bool = False,
     ) -> dict[str, Any]:
         item_rows = conn.execute(
-            """
-            SELECT m.slug, m.name, m.repo_url
-            FROM mcp_stack_items i
-            JOIN mcp_servers m ON m.slug = i.mcp_slug
-            WHERE i.stack_slug = ?
-            ORDER BY i.sort_order ASC, i.id ASC
-            """,
-            (row["slug"],),
-        ).fetchall()
+            select(mcp_servers.c.slug, mcp_servers.c.name, mcp_servers.c.repo_url)
+            .select_from(
+                mcp_stack_items.join(mcp_servers, mcp_servers.c.slug == mcp_stack_items.c.mcp_slug)
+            )
+            .where(mcp_stack_items.c.stack_slug == row["slug"])
+            .order_by(mcp_stack_items.c.sort_order.asc(), mcp_stack_items.c.id.asc())
+        ).mappings().all()
         summary = {
             **dict(row),
             "items": [dict(item) for item in item_rows],
@@ -705,27 +903,24 @@ class HubStore:
 
     def _telemetry_stats_by_slug(self) -> dict[str, dict[str, Any]]:
         window_start = (datetime.now(timezone.utc) - timedelta(days=7)).isoformat(timespec="seconds")
-        with self.connect() as conn:
+        with self.engine.connect() as conn:
             rows = conn.execute(
-                """
-                SELECT
-                    mcp_slug,
-                    COUNT(*) AS run_count,
-                    SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS success_count,
-                    SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END) AS error_count,
-                    AVG(NULLIF(latency_ms, 0)) AS avg_latency_ms,
-                    COUNT(DISTINCT instance_hash) AS active_instances
-                FROM telemetry_events
-                WHERE created_at >= ?
-                GROUP BY mcp_slug
-                """,
-                (window_start,),
-            ).fetchall()
+                select(
+                    telemetry_events.c.mcp_slug.label("mcp_slug"),
+                    func.count().label("run_count"),
+                    func.sum(case((telemetry_events.c.success.is_(True), 1), else_=0)).label("success_count"),
+                    func.sum(case((telemetry_events.c.success.is_(False), 1), else_=0)).label("error_count"),
+                    func.avg(func.nullif(telemetry_events.c.latency_ms, 0)).label("avg_latency_ms"),
+                    func.count(func.distinct(telemetry_events.c.instance_hash)).label("active_instances"),
+                )
+                .where(telemetry_events.c.created_at >= window_start)
+                .group_by(telemetry_events.c.mcp_slug)
+            ).mappings().all()
         stats: dict[str, dict[str, Any]] = {}
         for row in rows:
             run_count = int(row["run_count"] or 0)
             success_count = int(row["success_count"] or 0)
-            stats[row["mcp_slug"]] = {
+            stats[str(row["mcp_slug"])] = {
                 "run_count": run_count,
                 "success_count": success_count,
                 "error_count": int(row["error_count"] or 0),
@@ -734,3 +929,142 @@ class HubStore:
                 "active_instances": int(row["active_instances"] or 0),
             }
         return stats
+
+    @staticmethod
+    def _ensure_sqlite_parent(database_url: str) -> None:
+        if not database_url.startswith("sqlite:///"):
+            return
+        db_file = Path(database_url.removeprefix("sqlite:///")).expanduser()
+        db_file.parent.mkdir(parents=True, exist_ok=True)
+
+    def _insert_submission(
+        self,
+        conn,
+        *,
+        proposed_slug: str,
+        published_slug: str,
+        repo_url: str,
+        name: str,
+        submitted_by: str,
+        source_instance: str,
+        source_public_url: str,
+        status: str,
+        details: dict[str, Any],
+        submitted_at: str,
+    ) -> dict[str, Any]:
+        result = conn.execute(
+            mcp_submissions.insert().values(
+                proposed_slug=proposed_slug,
+                published_slug=published_slug,
+                repo_url=repo_url,
+                name=name,
+                submitted_by=submitted_by,
+                source_instance=source_instance,
+                source_public_url=source_public_url,
+                status=status,
+                details_json=json.dumps(details),
+                submitted_at=submitted_at,
+            )
+        )
+        submission_id = result.inserted_primary_key[0] if result.inserted_primary_key else None
+        return {
+            "id": submission_id,
+            "proposed_slug": proposed_slug,
+            "published_slug": published_slug,
+            "repo_url": repo_url,
+            "name": name,
+            "submitted_by": submitted_by,
+            "source_instance": source_instance,
+            "source_public_url": source_public_url,
+            "status": status,
+            "submitted_at": submitted_at,
+        }
+
+    def _allocate_submission_slug(self, conn, repo_url: str, proposed_slug: str, *, owner_name: str, repo_name: str) -> str:
+        existing_by_url = conn.execute(
+            select(mcp_servers.c.slug).where(mcp_servers.c.repo_url == repo_url)
+        ).scalar_one_or_none()
+        if existing_by_url:
+            return str(existing_by_url)
+
+        candidates = [
+            proposed_slug,
+            self._normalize_submission_slug(repo_name),
+            self._normalize_submission_slug(f"{owner_name}-{repo_name}"),
+        ]
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            if conn.execute(select(mcp_servers.c.slug).where(mcp_servers.c.slug == candidate)).scalar_one_or_none() is None:
+                return candidate
+
+        base = self._normalize_submission_slug(f"{owner_name}-{repo_name}") or "community-mcp"
+        suffix = 2
+        while True:
+            candidate = f"{base}-{suffix}"
+            if conn.execute(select(mcp_servers.c.slug).where(mcp_servers.c.slug == candidate)).scalar_one_or_none() is None:
+                return candidate
+            suffix += 1
+
+    @staticmethod
+    def _normalize_submission_slug(raw: str) -> str:
+        value = re.sub(r"[^a-z0-9]+", "-", str(raw or "").strip().lower()).strip("-")
+        return value[:120]
+
+    @staticmethod
+    def _normalize_text_list(value: Any) -> list[str]:
+        if isinstance(value, str):
+            items = [item.strip() for item in value.split(",")]
+        elif isinstance(value, (list, tuple, set)):
+            items = [str(item).strip() for item in value]
+        else:
+            items = []
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not item:
+                continue
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            normalized.append(item[:160])
+        return normalized
+
+    @staticmethod
+    def _guard_submission_text(*values: str) -> None:
+        for value in values:
+            text = str(value or "").strip()
+            if text and _SECRET_RE.search(text):
+                raise ValueError("Submission contains secret-like content. Remove API keys, tokens, and passwords before publishing.")
+
+    @staticmethod
+    def _infer_category(payload: dict[str, Any]) -> str:
+        text = " ".join(HubStore._normalize_text_list(payload.get("tools", []))).lower()
+        if any(token in text for token in ("github", "repo", "pull", "issue", "code", "devtools")):
+            return "Coding"
+        if any(token in text for token in ("search", "crawl", "extract", "browser", "doc", "context")):
+            return "Research"
+        return "Automation"
+
+    @staticmethod
+    def _infer_install_method(payload: dict[str, Any]) -> str:
+        repo_type = str(payload.get("repo_type", "")).strip().lower()
+        if repo_type:
+            return repo_type
+        return str(payload.get("install_method", "")).strip() or "unknown"
+
+    @staticmethod
+    def _infer_language(install_method: str) -> str:
+        method = str(install_method or "").strip().lower()
+        if method in {"npm", "workspace_package", "monorepo"}:
+            return "Node.js"
+        if method in {"python", "pip", "uv"}:
+            return "Python"
+        if method in {"remote", "http", "sse"}:
+            return "Remote"
+        if method == "docker":
+            return "Docker"
+        return "Unknown"

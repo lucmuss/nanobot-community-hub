@@ -21,19 +21,22 @@ _TEMPLATES = Jinja2Templates(directory=str(Path(__file__).resolve().parent / "te
 
 @dataclass(slots=True)
 class HubSettings:
-    db_path: Path
+    database_url: str
     public_url: str = ""
     instance_name: str = "nanobot-community-hub"
 
 
 def create_app() -> FastAPI:
-    db_path = Path(os.getenv("NANOBOT_HUB_DB_PATH", "./data/nanobot-community-hub.sqlite3")).expanduser()
+    database_url = os.getenv("NANOBOT_HUB_DATABASE_URL", "").strip()
+    if not database_url:
+        db_path = Path(os.getenv("NANOBOT_HUB_DB_PATH", "./data/nanobot-community-hub.sqlite3")).expanduser()
+        database_url = f"sqlite:///{db_path}"
     settings = HubSettings(
-        db_path=db_path,
+        database_url=database_url,
         public_url=os.getenv("NANOBOT_HUB_PUBLIC_URL", "").strip(),
         instance_name=os.getenv("NANOBOT_HUB_INSTANCE_NAME", "nanobot-community-hub").strip() or "nanobot-community-hub",
     )
-    store = HubStore(settings.db_path)
+    store = HubStore(settings.database_url)
     store.init()
 
     app = FastAPI(title="nanobot-community-hub", version=__version__)
@@ -41,25 +44,16 @@ def create_app() -> FastAPI:
     app.state.settings = settings
     app.state.store = store
 
-    @app.get("/", response_class=HTMLResponse)
-    async def root() -> RedirectResponse:
-        return RedirectResponse("/discover", status_code=302)
-
-    @app.get("/health")
-    async def health() -> dict[str, Any]:
-        return {
-            "ok": True,
-            "service": settings.instance_name,
-            "version": __version__,
-            "public_url": settings.public_url,
-        }
-
-    @app.get("/discover", response_class=HTMLResponse)
-    async def discover_page(
+    def render_discover(
         request: Request,
-        q: str = Query(""),
-        category: str = Query(""),
-        sort: str = Query("trending"),
+        *,
+        q: str = "",
+        category: str = "",
+        sort: str = "trending",
+        submission_form: dict[str, Any] | None = None,
+        submission_result: dict[str, Any] | None = None,
+        submission_error: str = "",
+        status_code: int = 200,
     ) -> HTMLResponse:
         items = store.list_mcps(search=q.strip(), category=category.strip(), sort=sort.strip())
         return _render(
@@ -74,7 +68,79 @@ def create_app() -> FastAPI:
                 "categories": store.categories(),
                 "items": items,
                 "overview": store.get_overview_stats(),
+                "submission_form": submission_form
+                or {
+                    "repo_url": "",
+                    "name": "",
+                    "description": "",
+                    "category": "",
+                    "install_method": "",
+                    "tags": "",
+                    "submitted_by": "",
+                },
+                "submission_result": submission_result or {},
+                "submission_error": submission_error,
             },
+            status_code=status_code,
+        )
+
+    @app.get("/", response_class=HTMLResponse)
+    async def root() -> RedirectResponse:
+        return RedirectResponse("/discover", status_code=302)
+
+    @app.get("/health")
+    async def health() -> dict[str, Any]:
+        return {
+            "ok": True,
+            "service": settings.instance_name,
+            "version": __version__,
+            "public_url": settings.public_url,
+            "database_backend": store.backend,
+        }
+
+    @app.get("/discover", response_class=HTMLResponse)
+    async def discover_page(
+        request: Request,
+        q: str = Query(""),
+        category: str = Query(""),
+        sort: str = Query("trending"),
+    ) -> HTMLResponse:
+        return render_discover(request, q=q, category=category, sort=sort)
+
+    @app.post("/discover/submit-mcp", response_class=HTMLResponse)
+    async def submit_mcp_page(request: Request) -> HTMLResponse:
+        form = await request.form()
+        payload = {
+            "repo_url": str(form.get("repo_url", "")).strip(),
+            "name": str(form.get("name", "")).strip(),
+            "description": str(form.get("description", "")).strip(),
+            "category": str(form.get("category", "")).strip(),
+            "install_method": str(form.get("install_method", "")).strip(),
+            "tags": _split_csv(str(form.get("tags", "")).strip()),
+            "submitted_by": str(form.get("submitted_by", "")).strip(),
+        }
+        try:
+            result = store.submit_mcp_submission(payload)
+        except ValueError as exc:
+            return render_discover(
+                request,
+                submission_form={**payload, "tags": ", ".join(payload["tags"])},
+                submission_error=str(exc),
+                status_code=400,
+            )
+        return render_discover(
+            request,
+            submission_result=result,
+            submission_form={
+                "repo_url": "",
+                "name": "",
+                "description": "",
+                "category": "",
+                "install_method": "",
+                "tags": "",
+                "submitted_by": payload["submitted_by"],
+            },
+            status_code=201 if result.get("created") else 200,
         )
 
     @app.get("/partials/discover-results", response_class=HTMLResponse)
@@ -252,6 +318,15 @@ def create_app() -> FastAPI:
     async def api_stats_overview() -> dict[str, Any]:
         return store.get_overview_stats()
 
+    @app.post("/api/v1/submissions/mcp")
+    async def api_submit_mcp(request: Request) -> JSONResponse:
+        payload = await request.json()
+        try:
+            result = store.submit_mcp_submission(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return JSONResponse(result, status_code=201 if result.get("created") else 200)
+
     @app.post("/api/v1/telemetry/events")
     async def api_telemetry_event(request: Request) -> JSONResponse:
         payload = await request.json()
@@ -264,7 +339,7 @@ def create_app() -> FastAPI:
     return app
 
 
-def _render(request: Request, template_name: str, context: dict[str, Any]) -> HTMLResponse:
+def _render(request: Request, template_name: str, context: dict[str, Any], status_code: int = 200) -> HTMLResponse:
     settings: HubSettings = request.app.state.settings
     shell_context = {
         "instance_name": settings.instance_name,
@@ -276,4 +351,9 @@ def _render(request: Request, template_name: str, context: dict[str, Any]) -> HT
         request=request,
         name=template_name,
         context={**shell_context, **context},
+        status_code=status_code,
     )
+
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]

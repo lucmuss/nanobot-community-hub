@@ -1,31 +1,17 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from fastapi.testclient import TestClient
 
-from nanobot_hub.app import create_app
 
-
-def build_client(tmp_path: Path) -> TestClient:
-    db_path = tmp_path / "hub.sqlite3"
-    import os
-
-    os.environ["NANOBOT_HUB_DB_PATH"] = str(db_path)
-    os.environ["NANOBOT_HUB_PUBLIC_URL"] = "https://nanobot-community-hub.kolibri-kollektiv.eu"
-    app = create_app()
-    return TestClient(app)
-
-
-def test_health_endpoint(tmp_path: Path) -> None:
-    client = build_client(tmp_path)
+def test_health_endpoint(client: TestClient) -> None:
     response = client.get("/api/v1/health")
     assert response.status_code == 200
     assert response.json()["ok"] is True
+    assert response.json()["database_backend"] == "sqlite"
+    assert response.json()["public_url"] == "https://nanobot-community-hub.kolibri-kollektiv.eu"
 
 
-def test_marketplace_seeded(tmp_path: Path) -> None:
-    client = build_client(tmp_path)
+def test_marketplace_seeded(client: TestClient) -> None:
     response = client.get("/api/v1/marketplace")
     assert response.status_code == 200
     payload = response.json()
@@ -33,8 +19,7 @@ def test_marketplace_seeded(tmp_path: Path) -> None:
     assert any(item["slug"] == "chrome-devtools-mcp" for item in payload["items"])
 
 
-def test_repo_resolve(tmp_path: Path) -> None:
-    client = build_client(tmp_path)
+def test_repo_resolve(client: TestClient) -> None:
     response = client.get(
         "/api/v1/marketplace/resolve",
         params={"repo_url": "https://github.com/ChromeDevTools/chrome-devtools-mcp"},
@@ -43,8 +28,7 @@ def test_repo_resolve(tmp_path: Path) -> None:
     assert response.json()["match"]["slug"] == "chrome-devtools-mcp"
 
 
-def test_telemetry_ingest(tmp_path: Path) -> None:
-    client = build_client(tmp_path)
+def test_telemetry_ingest(client: TestClient) -> None:
     response = client.post(
         "/api/v1/telemetry/events",
         json={

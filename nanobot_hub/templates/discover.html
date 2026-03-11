@@ -27,7 +27,7 @@
     </form>
   </section>
 
-  <div class="panel-grid two">
+  <div class="panel-grid two" style="margin-bottom: 24px;">
     <section class="panel">
       <p class="eyebrow">Registry Overview</p>
       <div class="meta-grid">
@@ -37,6 +37,43 @@
         <div class="meta-pair"><strong>Runs today</strong><span>{{ overview.runs_today }}</span></div>
       </div>
     </section>
+    <section class="panel" id="submit-mcp">
+      <p class="eyebrow">Submit MCP</p>
+      <h3 style="margin:0 0 8px;">Add a repository to the hub</h3>
+      <p class="muted" style="margin:0 0 14px;">Users can submit GitHub-based MCP repositories directly. The hub rejects obvious secret-like strings and deduplicates known repository URLs.</p>
+      {% if submission_error %}
+        <div class="panel" style="margin-bottom: 14px; background: var(--danger-soft); border-color: #fecaca;">
+          <strong>Submission failed</strong>
+          <p class="muted" style="margin-bottom: 0;">{{ submission_error }}</p>
+        </div>
+      {% endif %}
+      {% if submission_result %}
+        <div class="panel" style="margin-bottom: 14px; background: var(--success-soft); border-color: #bbf7d0;">
+          <strong>{% if submission_result.created %}Published to the hub{% else %}Already tracked by the hub{% endif %}</strong>
+          <p class="muted" style="margin-bottom: 0;">
+            {{ submission_result.item.name }} ·
+            <a href="/mcp/{{ submission_result.item.slug }}">Open detail</a>
+          </p>
+        </div>
+      {% endif %}
+      <form method="post" action="/discover/submit-mcp" class="search-form" data-testid="hub-submit-form">
+        <input type="url" name="repo_url" value="{{ submission_form.repo_url }}" placeholder="https://github.com/owner/repo" required data-testid="hub-submit-repo-url">
+        <input type="text" name="name" value="{{ submission_form.name }}" placeholder="Optional display name" data-testid="hub-submit-name">
+        <textarea name="description" rows="3" placeholder="Optional short description" data-testid="hub-submit-description">{{ submission_form.description }}</textarea>
+        <div class="search-row" style="grid-template-columns: minmax(0, 1fr) 180px 180px;">
+          <input type="text" name="category" value="{{ submission_form.category }}" placeholder="Coding, Research, Automation" data-testid="hub-submit-category">
+          <input type="text" name="install_method" value="{{ submission_form.install_method }}" placeholder="npm, python, remote" data-testid="hub-submit-install-method">
+          <input type="text" name="submitted_by" value="{{ submission_form.submitted_by }}" placeholder="Optional display name" data-testid="hub-submit-submitted-by">
+        </div>
+        <input type="text" name="tags" value="{{ submission_form.tags }}" placeholder="Tags, comma-separated" data-testid="hub-submit-tags">
+        <div class="topbar-actions" style="justify-content: flex-start;">
+          <button type="submit" data-testid="hub-submit-button">Publish MCP</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <div class="panel-grid two">
     <section class="panel">
       <p class="eyebrow">Top MCP Servers</p>
       {% for item in overview.top_mcps[:3] %}
@@ -48,6 +85,27 @@
           <span class="pill good">{{ "%.0f"|format(item.success_rate * 100) }}%</span>
         </div>
       {% endfor %}
+    </section>
+    <section class="panel">
+      <p class="eyebrow">How submissions work</p>
+      <div class="stat-line">
+        <div>
+          <strong>GitHub repositories only</strong>
+          <div class="muted">The first submission flow is intentionally limited to GitHub URLs.</div>
+        </div>
+      </div>
+      <div class="stat-line">
+        <div>
+          <strong>No secrets allowed</strong>
+          <div class="muted">API keys, bearer tokens, and similar strings are rejected before publication.</div>
+        </div>
+      </div>
+      <div class="stat-line">
+        <div>
+          <strong>Duplicates are merged</strong>
+          <div class="muted">If a repository is already known, the hub links you to the existing MCP detail page.</div>
+        </div>
+      </div>
     </section>
   </div>
 
