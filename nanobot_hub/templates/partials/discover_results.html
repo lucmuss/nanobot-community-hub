@@ -4,7 +4,7 @@
       <div class="page-header-main">
         <div class="page-header-copy">
           <h3>{{ item.name }}</h3>
-          <p class="muted">{{ item.description }}</p>
+          <div class="text-markdown muted">{{ render_markdown(item.description) | safe }}</div>
         </div>
         <div class="pill {{ item.reliability.tone }}">{{ item.reliability.label }}</div>
       </div>
@@ -60,6 +60,7 @@
         <div class="meta-pair"><strong>Observed installs</strong><span>{{ item.installs }}</span></div>
         <div class="meta-pair"><strong>Tools</strong><span>{{ item.tool_count }}</span></div>
         <div class="meta-pair"><strong>Usage trend</strong><span>{{ item.usage_trend.label }} · {{ item.usage_trend.runs_24h }} in 24h</span></div>
+        <div class="meta-pair"><strong>Community vote</strong><span>{{ item.votes.score_percent|round(0)|int }}% · {{ item.votes.total }} votes</span></div>
       </div>
 
       {% if item.known_fixes %}
@@ -77,7 +78,7 @@
         {% endfor %}
       </div>
 
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:16px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:16px;margin-top:auto;padding-top:16px;flex-wrap:wrap;">
         <div class="muted mono">{{ item.repo_url }}</div>
         <div style="display:flex;gap:8px;">
           <a class="button secondary" href="/mcp/{{ item.slug }}">View Details</a>

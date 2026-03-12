@@ -176,6 +176,15 @@ a { color: inherit; text-decoration: none; }
 
 .topbar-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .topbar-actions form { margin: 0; }
+.vote-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.vote-strip form {
+  margin: 0;
+}
 
 .mobile-topbar-copy {
   min-width: 0;
@@ -405,6 +414,65 @@ input, select, textarea {
 .meta-chip.good { background: var(--success-soft); color: var(--success); border-color: rgba(22, 101, 52, 0.14); }
 .meta-chip.warn { background: var(--warning-soft); color: var(--warning); border-color: rgba(146, 64, 14, 0.14); }
 .meta-chip.bad { background: var(--danger-soft); color: var(--danger); border-color: rgba(153, 27, 27, 0.14); }
+
+.text-markdown {
+  display: grid;
+  gap: 0.45rem;
+  line-height: 1.55;
+}
+
+.text-markdown > *:first-child {
+  margin-top: 0;
+}
+
+.text-markdown > *:last-child {
+  margin-bottom: 0;
+}
+
+.text-markdown ul,
+.text-markdown ol {
+  margin: 0.15rem 0 0.15rem 1.1rem;
+  padding: 0;
+}
+
+.text-markdown p,
+.text-markdown pre,
+.text-markdown h1,
+.text-markdown h2,
+.text-markdown h3,
+.text-markdown h4,
+.text-markdown h5,
+.text-markdown h6,
+.text-markdown blockquote {
+  margin: 0;
+}
+
+.text-markdown code {
+  font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+  font-size: 0.85em;
+  padding: 0.12rem 0.35rem;
+  border-radius: 6px;
+  background: #f3f4f6;
+}
+
+.text-markdown pre {
+  overflow-x: auto;
+  padding: 0.85rem 0.95rem;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: #f8fafc;
+}
+
+.text-markdown pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.text-markdown a {
+  color: #b45309;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
 
 .compact-kpi-grid {
   display: grid;

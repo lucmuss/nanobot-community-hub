@@ -7,6 +7,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from nanobot_hub.app import create_app
+from nanobot_hub.store import HubStore
+
+
+@pytest.fixture(autouse=True)
+def disable_live_github_requests(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(HubStore, "_fetch_github_json", staticmethod(lambda _url: None))
 
 
 @pytest.fixture

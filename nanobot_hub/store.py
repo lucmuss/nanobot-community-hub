@@ -6,6 +6,8 @@ import hashlib
 import json
 import math
 import re
+import urllib.error
+import urllib.request
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -203,6 +205,18 @@ mcp_submissions = Table(
     Column("submitted_at", String(40), nullable=False),
 )
 
+community_votes = Table(
+    "community_votes",
+    metadata,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column("target_type", String(32), nullable=False),
+    Column("target_slug", String(255), nullable=False),
+    Column("voter_key", String(255), nullable=False),
+    Column("vote_type", String(16), nullable=False),
+    Column("created_at", String(40), nullable=False),
+    UniqueConstraint("target_type", "target_slug", "voter_key", name="uq_community_votes_target_voter"),
+)
+
 Index("ix_mcp_servers_status", mcp_servers.c.status)
 Index("ix_mcp_servers_category", mcp_servers.c.category)
 Index("ix_mcp_servers_language", mcp_servers.c.language)
@@ -218,6 +232,8 @@ Index("ix_mcp_stack_items_stack_slug", mcp_stack_items.c.stack_slug)
 Index("ix_mcp_stack_items_mcp_slug", mcp_stack_items.c.mcp_slug)
 Index("ix_showcase_entries_category", showcase_entries.c.category)
 Index("ix_mcp_submissions_status", mcp_submissions.c.status)
+Index("ix_community_votes_target", community_votes.c.target_type, community_votes.c.target_slug)
+Index("ix_community_votes_voter", community_votes.c.voter_key)
 
 
 HUB_RUNTIME_DEFAULTS: dict[str, Any] = {
@@ -464,6 +480,38 @@ _GITHUB_REPO_RE = re.compile(r"^https://github\.com/(?P<owner>[^/]+)/(?P<repo>[^
 _SECRET_RE = re.compile(
     r"(sk-[A-Za-z0-9_\-]{12,}|ghp_[A-Za-z0-9]{12,}|github_pat_[A-Za-z0-9_]+|fc-[A-Za-z0-9]{12,}|AIza[0-9A-Za-z\-_]{20,}|Bearer\s+[A-Za-z0-9._\-]+)",
     re.IGNORECASE,
+)
+
+KNOWN_CATEGORY_LABELS: tuple[str, ...] = (
+    "Automation",
+    "Coding",
+    "Research",
+    "Browser",
+    "Testing",
+    "AI Agents",
+    "Knowledge workflows",
+    "Data extraction",
+    "DevOps",
+    "Security",
+    "Monitoring",
+)
+
+KNOWN_LANGUAGE_LABELS: tuple[str, ...] = (
+    "Node.js",
+    "TypeScript",
+    "JavaScript",
+    "Python",
+    "Go",
+    "Rust",
+    "Java",
+    "C#",
+    "C++",
+    "Ruby",
+    "PHP",
+    "Kotlin",
+    "Swift",
+    "Remote",
+    "Docker",
 )
 
 
@@ -726,12 +774,16 @@ class HubStore:
             if not include_private:
                 conditions.append(mcp_servers.c.status != "rejected")
             if search:
-                query = f"%{search.lower()}%"
+                query = self._search_like_pattern(search)
                 conditions.append(
                     or_(
                         func.lower(mcp_servers.c.name).like(query),
                         func.lower(mcp_servers.c.description).like(query),
                         func.lower(mcp_servers.c.repo_url).like(query),
+                        func.lower(mcp_servers.c.category).like(query),
+                        func.lower(mcp_servers.c.language).like(query),
+                        func.lower(mcp_servers.c.install_method).like(query),
+                        func.lower(mcp_servers.c.tags_json).like(query),
                     )
                 )
             if category:
@@ -759,6 +811,7 @@ class HubStore:
                 telemetry,
                 runtime_settings=runtime_settings,
             )
+            vote_map = self._prefetch_vote_summary_map(conn, "mcp", slugs)
             error_cluster_map = self._build_error_clusters_for_slugs(
                 conn,
                 [slug for slug in slugs if int(telemetry.get(slug, {}).get("error_count", 0) or 0) > 0],
@@ -772,6 +825,7 @@ class HubStore:
                     telemetry.get(slug, {}),
                     prefetched_tools=tools_map,
                     prefetched_recommendations=recommendation_map,
+                    prefetched_votes=vote_map,
                     runtime_settings=runtime_settings,
                 )
                 if int(item.get("recent_errors", 0) or 0) > 0:
@@ -781,6 +835,8 @@ class HubStore:
                     item["error_clusters"] = []
                     item["known_fixes"] = []
                 items.append(item)
+            if search:
+                items = self._filter_mcps_by_search(items, search)
             if minimum_percent > 0:
                 items = [
                     item
@@ -870,6 +926,7 @@ class HubStore:
                 detailed=True,
                 prefetched_tools=self._prefetch_tools_map(conn, [slug]),
                 prefetched_recommendations=recommendation_map,
+                prefetched_votes=self._prefetch_vote_summary_map(conn, "mcp", [slug]),
                 runtime_settings=runtime_settings,
             )
             item["recommended_config"] = recommendation_map.get(slug)
@@ -1070,21 +1127,18 @@ class HubStore:
             conditions = []
             if not include_private:
                 conditions.append(mcp_stacks.c.is_public.is_(True))
-            if search:
-                query = f"%{search.lower()}%"
-                conditions.append(
-                    or_(
-                        func.lower(mcp_stacks.c.title).like(query),
-                        func.lower(mcp_stacks.c.description).like(query),
-                    )
-                )
             if conditions:
                 stmt = stmt.where(and_(*conditions))
             rows = conn.execute(stmt).mappings().all()
-            items = [self._build_stack_summary(conn, row) for row in rows]
+            slugs = [str(row["slug"]) for row in rows]
+            vote_map = self._prefetch_vote_summary_map(conn, "stack", slugs)
+            items = [self._build_stack_summary(conn, row, prefetched_votes=vote_map) for row in rows]
+            if search:
+                items = self._filter_stacks_by_search(items, search)
             items.sort(
                 key=lambda item: (
-                    float(item.get("rating", 0.0) or 0.0),
+                    float(item.get("votes", {}).get("score_percent", 0.0) or 0.0),
+                    int(item.get("votes", {}).get("total", 0) or 0),
                     int(item.get("imports_count", 0) or 0),
                     str(item.get("title", "")),
                 ),
@@ -1100,7 +1154,8 @@ class HubStore:
             row = conn.execute(stmt).mappings().first()
             if row is None:
                 return None
-            return self._build_stack_summary(conn, row, detailed=True)
+            vote_map = self._prefetch_vote_summary_map(conn, "stack", [slug])
+            return self._build_stack_summary(conn, row, detailed=True, prefetched_votes=vote_map)
 
     def list_showcase(
         self,
@@ -1114,14 +1169,6 @@ class HubStore:
             conditions = []
             if not include_private:
                 conditions.append(showcase_entries.c.is_public.is_(True))
-            if search:
-                query = f"%{search.lower()}%"
-                conditions.append(
-                    or_(
-                        func.lower(showcase_entries.c.title).like(query),
-                        func.lower(showcase_entries.c.description).like(query),
-                    )
-                )
             if category:
                 conditions.append(showcase_entries.c.category == category)
             if conditions:
@@ -1164,10 +1211,11 @@ class HubStore:
                         "demo_ready": bool(stack_row and stack_items and str(row.get("example_prompt", "")).strip()),
                     }
                 )
+            if search:
+                items = self._filter_showcase_by_search(items, search)
             items.sort(
                 key=lambda item: (
                     int(item.get("imports_count", 0) or 0),
-                    int(item.get("upvotes_count", 0) or 0),
                     str(item.get("title", "")),
                 ),
                 reverse=True,
@@ -1435,15 +1483,20 @@ class HubStore:
         proposed_slug = self._normalize_submission_slug(str(payload.get("slug", "")).strip())
         repo_name = match.group("repo")
         owner_name = match.group("owner")
-        name = str(payload.get("name", "")).strip() or repo_name.replace("-", " ").replace("_", " ").title()
-        description = str(payload.get("description", "")).strip() or "Community-submitted MCP server."
-        category = str(payload.get("category", "")).strip() or self._infer_category(payload)
-        install_method = str(payload.get("install_method", "")).strip() or self._infer_install_method(payload)
-        language = str(payload.get("language", "")).strip() or self._infer_language(install_method)
+        repo_hints = self._probe_github_repo_hints(repo_url)
+        name = str(payload.get("name", "")).strip() or str(repo_hints.get("name", "")).strip() or repo_name.replace("-", " ").replace("_", " ").title()
+        description = (
+            str(payload.get("description", "")).strip()
+            or str(repo_hints.get("description", "")).strip()
+            or "Community-submitted MCP server."
+        )
+        install_method = str(payload.get("install_method", "")).strip() or self._infer_install_method(payload, repo_hints=repo_hints)
+        language = str(payload.get("language", "")).strip() or self._infer_language(install_method, repo_hints=repo_hints)
+        category = str(payload.get("category", "")).strip() or self._infer_category(payload, repo_hints=repo_hints)
         submitted_by = str(payload.get("submitted_by", "")).strip()
         source_instance = str(payload.get("source_instance", "")).strip()
         source_public_url = str(payload.get("source_public_url", "")).strip()
-        tags = self._normalize_text_list(payload.get("tags", []))
+        tags = self._normalize_text_list([*self._normalize_text_list(repo_hints.get("tags", [])), *self._normalize_text_list(payload.get("tags", []))])
         tools = self._normalize_text_list(payload.get("tools", []))
         known_issues = self._normalize_text_list(payload.get("known_issues", []))
 
@@ -1883,14 +1936,20 @@ class HubStore:
             rows = conn.execute(
                 select(mcp_servers.c.category).distinct().order_by(mcp_servers.c.category.asc())
             ).all()
-            return [str(row[0]) for row in rows]
+            values = {str(row[0]) for row in rows if str(row[0]).strip()}
+        ordered = list(KNOWN_CATEGORY_LABELS)
+        extras = sorted(values.difference(ordered))
+        return ordered + extras
 
     def languages(self) -> list[str]:
         with self.engine.connect() as conn:
             rows = conn.execute(
                 select(mcp_servers.c.language).distinct().order_by(mcp_servers.c.language.asc())
             ).all()
-            return [str(row[0]) for row in rows]
+            values = {str(row[0]) for row in rows if str(row[0]).strip()}
+        ordered = list(KNOWN_LANGUAGE_LABELS)
+        extras = sorted(values.difference(ordered))
+        return ordered + extras
 
     @staticmethod
     def runtime_options() -> list[str]:
@@ -1901,7 +1960,235 @@ class HubStore:
             rows = conn.execute(
                 select(showcase_entries.c.category).distinct().order_by(showcase_entries.c.category.asc())
             ).all()
-            return [str(row[0]) for row in rows]
+            values = {str(row[0]) for row in rows if str(row[0]).strip()}
+        ordered = list(KNOWN_CATEGORY_LABELS)
+        extras = sorted(values.difference(ordered))
+        return ordered + extras
+
+    @staticmethod
+    def _empty_vote_summary() -> dict[str, Any]:
+        return {
+            "up": 0,
+            "down": 0,
+            "total": 0,
+            "score_percent": 0.0,
+            "label": "No votes yet",
+        }
+
+    def _build_vote_summary_payload(self, up: int, down: int) -> dict[str, Any]:
+        total = max(0, int(up or 0)) + max(0, int(down or 0))
+        if total <= 0:
+            return self._empty_vote_summary()
+        score_percent = round((max(0, int(up or 0)) / total) * 100.0, 1)
+        if score_percent >= 90:
+            label = "Community approved"
+        elif score_percent >= 70:
+            label = "Mostly positive"
+        elif score_percent >= 50:
+            label = "Mixed"
+        else:
+            label = "Needs review"
+        return {
+            "up": max(0, int(up or 0)),
+            "down": max(0, int(down or 0)),
+            "total": total,
+            "score_percent": score_percent,
+            "label": label,
+        }
+
+    def _prefetch_vote_summary_map(
+        self,
+        conn,
+        target_type: str,
+        slugs: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        normalized = [str(slug).strip() for slug in slugs if str(slug).strip()]
+        if not normalized:
+            return {}
+        rows = conn.execute(
+            select(
+                community_votes.c.target_slug,
+                community_votes.c.vote_type,
+                func.count().label("count"),
+            )
+            .where(
+                and_(
+                    community_votes.c.target_type == str(target_type).strip(),
+                    community_votes.c.target_slug.in_(normalized),
+                )
+            )
+            .group_by(community_votes.c.target_slug, community_votes.c.vote_type)
+        ).mappings().all()
+        grouped: dict[str, dict[str, int]] = {slug: {"up": 0, "down": 0} for slug in normalized}
+        for row in rows:
+            slug = str(row["target_slug"]).strip()
+            vote_type = str(row["vote_type"]).strip().lower()
+            if slug not in grouped or vote_type not in {"up", "down"}:
+                continue
+            grouped[slug][vote_type] = int(row["count"] or 0)
+        return {
+            slug: self._build_vote_summary_payload(counts.get("up", 0), counts.get("down", 0))
+            for slug, counts in grouped.items()
+        }
+
+    def _normalize_search_text(self, value: Any) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower())
+        return " ".join(token for token in normalized.split() if token)
+
+    def _search_tokens(self, search: str) -> list[str]:
+        normalized = self._normalize_search_text(search)
+        return [token for token in normalized.split(" ") if token]
+
+    def _search_like_pattern(self, search: str) -> str:
+        tokens = self._search_tokens(search)
+        if not tokens:
+            return "%"
+        return "%" + "%".join(tokens) + "%"
+
+    def _matches_search_tokens(self, search: str, *parts: Any) -> bool:
+        tokens = self._search_tokens(search)
+        if not tokens:
+            return True
+        haystack = " ".join(
+            self._normalize_search_text(part)
+            for part in parts
+            if self._normalize_search_text(part)
+        )
+        return all(token in haystack for token in tokens)
+
+    def _filter_mcps_by_search(self, items: list[dict[str, Any]], search: str) -> list[dict[str, Any]]:
+        if not self._search_tokens(search):
+            return items
+        filtered: list[dict[str, Any]] = []
+        for item in items:
+            if self._matches_search_tokens(
+                search,
+                item.get("name"),
+                item.get("description"),
+                item.get("repo_url"),
+                item.get("category"),
+                item.get("language"),
+                item.get("install_method"),
+                " ".join(item.get("tags", [])),
+                " ".join(item.get("tools", [])),
+                " ".join(item.get("known_issues", [])),
+                " ".join(item.get("best_for", [])),
+                " ".join(item.get("dependencies", [])),
+            ):
+                filtered.append(item)
+        return filtered
+
+    def _filter_stacks_by_search(self, items: list[dict[str, Any]], search: str) -> list[dict[str, Any]]:
+        if not self._search_tokens(search):
+            return items
+        filtered: list[dict[str, Any]] = []
+        for item in items:
+            if self._matches_search_tokens(
+                search,
+                item.get("title"),
+                item.get("description"),
+                item.get("use_case"),
+                item.get("example_prompt"),
+                item.get("recommended_model"),
+                " ".join(item.get("best_for", [])),
+                " ".join(str(entry.get("name", "")) for entry in item.get("items", []) if isinstance(entry, dict)),
+                " ".join(str(entry.get("slug", "")) for entry in item.get("items", []) if isinstance(entry, dict)),
+            ):
+                filtered.append(item)
+        return filtered
+
+    def _filter_showcase_by_search(self, items: list[dict[str, Any]], search: str) -> list[dict[str, Any]]:
+        if not self._search_tokens(search):
+            return items
+        filtered: list[dict[str, Any]] = []
+        for item in items:
+            stack = item.get("stack") if isinstance(item.get("stack"), dict) else {}
+            if self._matches_search_tokens(
+                search,
+                item.get("title"),
+                item.get("description"),
+                item.get("use_case"),
+                item.get("example_prompt"),
+                item.get("category"),
+                " ".join(item.get("best_for", [])),
+                stack.get("title"),
+                stack.get("recommended_model"),
+                " ".join(str(entry.get("name", "")) for entry in item.get("stack_items", []) if isinstance(entry, dict)),
+            ):
+                filtered.append(item)
+        return filtered
+
+    def record_vote(
+        self,
+        target_type: str,
+        target_slug: str,
+        voter_key: str,
+        vote_type: str,
+    ) -> dict[str, Any]:
+        normalized_target_type = str(target_type or "").strip().lower()
+        normalized_target_slug = str(target_slug or "").strip()
+        normalized_voter_key = str(voter_key or "").strip()
+        normalized_vote_type = str(vote_type or "").strip().lower()
+        if normalized_target_type not in {"mcp", "stack"}:
+            raise ValueError("Unsupported vote target.")
+        if not normalized_target_slug:
+            raise ValueError("Target slug is required.")
+        if normalized_vote_type not in {"up", "down"}:
+            raise ValueError("Vote type must be 'up' or 'down'.")
+        if not normalized_voter_key:
+            raise ValueError("Voter key is required.")
+
+        with self.engine.begin() as conn:
+            if normalized_target_type == "mcp":
+                exists = conn.execute(
+                    select(mcp_servers.c.slug).where(mcp_servers.c.slug == normalized_target_slug)
+                ).scalar_one_or_none()
+            else:
+                exists = conn.execute(
+                    select(mcp_stacks.c.slug).where(mcp_stacks.c.slug == normalized_target_slug)
+                ).scalar_one_or_none()
+            if exists is None:
+                raise ValueError("Vote target was not found.")
+
+            existing = conn.execute(
+                select(community_votes.c.id).where(
+                    and_(
+                        community_votes.c.target_type == normalized_target_type,
+                        community_votes.c.target_slug == normalized_target_slug,
+                        community_votes.c.voter_key == normalized_voter_key,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                conn.execute(
+                    community_votes.insert().values(
+                        target_type=normalized_target_type,
+                        target_slug=normalized_target_slug,
+                        voter_key=normalized_voter_key,
+                        vote_type=normalized_vote_type,
+                        created_at=_utc_now(),
+                    )
+                )
+            else:
+                conn.execute(
+                    community_votes.update()
+                    .where(community_votes.c.id == int(existing))
+                    .values(vote_type=normalized_vote_type, created_at=_utc_now())
+                )
+
+            summary = self._prefetch_vote_summary_map(conn, normalized_target_type, [normalized_target_slug]).get(
+                normalized_target_slug,
+                self._empty_vote_summary(),
+            )
+
+        self._invalidate_cache("marketplace:")
+        self._invalidate_cache("overview:")
+        return {
+            "target_type": normalized_target_type,
+            "target_slug": normalized_target_slug,
+            "vote": normalized_vote_type,
+            "summary": summary,
+        }
 
     def _build_mcp_summary(
         self,
@@ -1912,6 +2199,7 @@ class HubStore:
         detailed: bool = False,
         prefetched_tools: dict[str, list[str]] | None = None,
         prefetched_recommendations: dict[str, dict[str, Any] | None] | None = None,
+        prefetched_votes: dict[str, dict[str, Any]] | None = None,
         runtime_settings: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         slug = str(row["slug"])
@@ -2034,6 +2322,7 @@ class HubStore:
                 status=str(row["status"]),
             ),
             "installs": observed_installs,
+            "votes": (prefetched_votes or {}).get(slug, self._empty_vote_summary()),
         }
         if detailed:
             summary["recent_telemetry"] = telemetry
@@ -2045,7 +2334,9 @@ class HubStore:
         row: dict[str, Any],
         *,
         detailed: bool = False,
+        prefetched_votes: dict[str, dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        slug = str(row["slug"])
         item_rows = conn.execute(
             select(
                 mcp_servers.c.slug,
@@ -2063,12 +2354,19 @@ class HubStore:
         ).mappings().all()
         summary = {
             **dict(row),
+            "catalog_rating": round(float(row.get("rating", 0.0) or 0.0), 2),
             "catalog_imports_count": max(0, int(row["imports_count"] or 0)),
             "imports_count": max(
                 0,
-                int(row["imports_count"] or 0) - int(SEED_STACK_IMPORT_BASELINES.get(str(row["slug"]), 0) or 0),
+                int(row["imports_count"] or 0) - int(SEED_STACK_IMPORT_BASELINES.get(slug, 0) or 0),
             ),
             "items": [dict(item) for item in item_rows],
+            "votes": (prefetched_votes or {}).get(slug, self._empty_vote_summary()),
+            "rating": round(
+                float((prefetched_votes or {}).get(slug, self._empty_vote_summary()).get("score_percent", 0.0) or 0.0)
+                / 20.0,
+                1,
+            ),
             "difficulty": self._build_stack_difficulty_payload(
                 item_count=len(item_rows),
                 install_methods=[str(item.get("install_method", "")) for item in item_rows],
@@ -2705,23 +3003,48 @@ class HubStore:
                 raise ValueError("Submission contains secret-like content. Remove API keys, tokens, and passwords before publishing.")
 
     @staticmethod
-    def _infer_category(payload: dict[str, Any]) -> str:
-        text = " ".join(HubStore._normalize_text_list(payload.get("tools", []))).lower()
-        if any(token in text for token in ("github", "repo", "pull", "issue", "code", "devtools")):
-            return "Coding"
-        if any(token in text for token in ("search", "crawl", "extract", "browser", "doc", "context")):
-            return "Research"
+    def _infer_category(payload: dict[str, Any], *, repo_hints: dict[str, Any] | None = None) -> str:
+        repo_hints = repo_hints or {}
+        text_parts = [
+            str(repo_hints.get("description", "")).strip(),
+            " ".join(HubStore._normalize_text_list(repo_hints.get("tags", []))),
+            " ".join(HubStore._normalize_text_list(payload.get("tools", []))),
+            str(payload.get("name", "")).strip(),
+            str(payload.get("description", "")).strip(),
+        ]
+        text = " ".join(part for part in text_parts if part).lower()
+        category_map: list[tuple[str, tuple[str, ...]]] = [
+            ("Security", ("security", "auth", "oauth", "vuln", "scan", "jwt")),
+            ("Monitoring", ("monitor", "metrics", "telemetry", "observability", "logging", "error")),
+            ("DevOps", ("devops", "terraform", "kubernetes", "docker", "deploy", "infrastructure", "ci", "cd")),
+            ("Browser", ("browser", "devtools", "playwright", "puppeteer", "selenium", "chrome")),
+            ("Testing", ("testing", "test", "qa", "e2e", "assertion")),
+            ("Knowledge workflows", ("knowledge", "context", "retrieval", "docs", "document")),
+            ("Data extraction", ("crawl", "scrape", "extract", "firecrawl", "parse")),
+            ("Coding", ("github", "repo", "pull", "issue", "code", "patch", "review")),
+            ("Research", ("research", "search", "wiki", "arxiv", "browser", "paper")),
+            ("AI Agents", ("agent", "agents", "llm", "prompt", "reasoning")),
+        ]
+        for label, tokens in category_map:
+            if any(token in text for token in tokens):
+                return label
         return "Automation"
 
     @staticmethod
-    def _infer_install_method(payload: dict[str, Any]) -> str:
+    def _infer_install_method(payload: dict[str, Any], *, repo_hints: dict[str, Any] | None = None) -> str:
         repo_type = str(payload.get("repo_type", "")).strip().lower()
         if repo_type:
             return repo_type
-        return str(payload.get("install_method", "")).strip() or "unknown"
+        repo_hints = repo_hints or {}
+        hinted = str(repo_hints.get("install_method", "")).strip().lower()
+        return hinted or str(payload.get("install_method", "")).strip() or "unknown"
 
     @staticmethod
-    def _infer_language(install_method: str) -> str:
+    def _infer_language(install_method: str, *, repo_hints: dict[str, Any] | None = None) -> str:
+        repo_hints = repo_hints or {}
+        primary_language = str(repo_hints.get("primary_language", "")).strip()
+        if primary_language:
+            return HubStore._normalize_language_label(primary_language)
         method = str(install_method or "").strip().lower()
         if method in {"npm", "workspace_package", "monorepo"}:
             return "Node.js"
@@ -2732,6 +3055,94 @@ class HubStore:
         if method == "docker":
             return "Docker"
         return "Unknown"
+
+    @staticmethod
+    def _normalize_language_label(value: str) -> str:
+        raw = str(value or "").strip()
+        if not raw:
+            return "Unknown"
+        lowered = raw.lower()
+        aliases = {
+            "typescript": "TypeScript",
+            "javascript": "JavaScript",
+            "python": "Python",
+            "go": "Go",
+            "rust": "Rust",
+            "java": "Java",
+            "c#": "C#",
+            "csharp": "C#",
+            "c++": "C++",
+            "cpp": "C++",
+            "ruby": "Ruby",
+            "php": "PHP",
+            "kotlin": "Kotlin",
+            "swift": "Swift",
+            "node": "Node.js",
+            "node.js": "Node.js",
+            "remote": "Remote",
+            "docker": "Docker",
+        }
+        return aliases.get(lowered, raw)
+
+    @classmethod
+    def _probe_github_repo_hints(cls, repo_url: str) -> dict[str, Any]:
+        match = _GITHUB_REPO_RE.match(_normalize_repo_url(repo_url))
+        if not match:
+            return {}
+        owner = match.group("owner")
+        repo = match.group("repo")
+        base_url = f"https://api.github.com/repos/{owner}/{repo}"
+
+        repo_json = cls._fetch_github_json(base_url) or {}
+        languages_json = cls._fetch_github_json(f"{base_url}/languages") or {}
+        contents_json = cls._fetch_github_json(f"{base_url}/contents") or []
+
+        contents_names = {
+            str(entry.get("name", "")).strip()
+            for entry in contents_json
+            if isinstance(entry, dict) and str(entry.get("name", "")).strip()
+        }
+        topics = [str(item).strip() for item in repo_json.get("topics", []) if str(item).strip()]
+        primary_language = ""
+        if isinstance(languages_json, dict) and languages_json:
+            primary_language = max(
+                ((str(key), int(value or 0)) for key, value in languages_json.items()),
+                key=lambda item: item[1],
+            )[0]
+
+        install_method = ""
+        if {"package.json"} & contents_names:
+            install_method = "npm"
+        elif {"pyproject.toml", "requirements.txt", "uv.lock"} & contents_names:
+            install_method = "python"
+        elif {"Dockerfile", "docker-compose.yml", "compose.yml"} & contents_names:
+            install_method = "docker"
+        elif {".mcp.json", "server.json", "mcp.json"} & contents_names:
+            install_method = "unknown"
+
+        return {
+            "name": str(repo_json.get("name", "")).strip(),
+            "description": str(repo_json.get("description", "")).strip(),
+            "tags": topics,
+            "primary_language": primary_language,
+            "install_method": install_method,
+            "contents": sorted(contents_names),
+        }
+
+    @staticmethod
+    def _fetch_github_json(url: str) -> Any | None:
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": "nanobot-community-hub",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=4) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError, ValueError):
+            return None
 
     @staticmethod
     def _build_reliability_payload(*, success_rate: float, status: str, verified: bool, has_live_telemetry: bool) -> dict[str, Any]:
@@ -2796,7 +3207,7 @@ class HubStore:
         method = str(install_method or "").strip().lower()
         language_label = str(language or "").strip().lower()
         dependencies: list[str] = []
-        if method in {"npm", "workspace_package", "monorepo"} or language_label == "node.js":
+        if method in {"npm", "workspace_package", "monorepo"} or language_label in {"node.js", "typescript", "javascript"}:
             dependencies.extend(["Node.js >= 18", "npm / npx"])
         elif method in {"python", "pip", "uv"} or language_label == "python":
             dependencies.extend(["Python 3.11+", "uv / pip"])
@@ -2804,6 +3215,22 @@ class HubStore:
             dependencies.append("Docker runtime")
         elif method in {"remote", "http", "sse"} or language_label == "remote":
             dependencies.append("Remote MCP endpoint")
+        elif language_label == "go":
+            dependencies.append("Go toolchain")
+        elif language_label == "rust":
+            dependencies.append("Rust toolchain")
+        elif language_label in {"java", "kotlin"}:
+            dependencies.append("JDK runtime")
+        elif language_label in {"c#", "csharp"}:
+            dependencies.append(".NET SDK")
+        elif language_label in {"c++", "cpp"}:
+            dependencies.append("Native C++ toolchain")
+        elif language_label == "ruby":
+            dependencies.append("Ruby runtime")
+        elif language_label == "php":
+            dependencies.append("PHP runtime")
+        elif language_label == "swift":
+            dependencies.append("Swift toolchain")
         if str(status or "").strip().lower() == "needs_configuration":
             dependencies.append("Runtime secrets")
         return dependencies[:4]
@@ -2812,7 +3239,7 @@ class HubStore:
     def _build_runtime_engine_payload(*, install_method: str, language: str) -> dict[str, str]:
         method = str(install_method or "").strip().lower()
         language_label = str(language or "").strip().lower()
-        if method in {"npm", "workspace_package", "monorepo"} or language_label == "node.js":
+        if method in {"npm", "workspace_package", "monorepo"} or language_label in {"node.js", "typescript", "javascript"}:
             return {"label": "Node", "tone": "good"}
         if method in {"python", "pip", "uv"} or language_label == "python":
             return {"label": "Python", "tone": "good"}

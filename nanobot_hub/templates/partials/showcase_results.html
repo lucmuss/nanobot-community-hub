@@ -5,7 +5,7 @@
       <div class="page-header-main">
         <div class="page-header-copy">
           <h3>{{ item.title }}</h3>
-          <p class="muted">{{ item.description }}</p>
+          <div class="text-markdown muted">{{ render_markdown(item.description) | safe }}</div>
         </div>
         <span class="pill neutral">{{ item.imports_count }} observed imports</span>
       </div>

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
+from nanobot_hub.store import HubStore
+
 
 AUTH_HEADERS = {"Authorization": "Bearer hub-test-api-token"}
 
@@ -35,6 +37,21 @@ def test_marketplace_filters_and_sorting(client: TestClient) -> None:
     assert "Remote" in payload["languages"]
     assert "Remote/API" in payload["runtime_options"]
     assert 95 in payload["reliability_options"]
+
+
+def test_marketplace_filter_metadata_exposes_extended_languages_and_categories(client: TestClient) -> None:
+    response = client.get("/api/v1/marketplace")
+    assert response.status_code == 200
+    payload = response.json()
+
+    assert "Python" in payload["languages"]
+    assert "TypeScript" in payload["languages"]
+    assert "Go" in payload["languages"]
+    assert "Rust" in payload["languages"]
+    assert "Security" in payload["categories"]
+    assert "Monitoring" in payload["categories"]
+    assert "Knowledge workflows" in payload["categories"]
+    assert "DevOps" in payload["categories"]
 
 
 def test_marketplace_runtime_filter_and_local_gui_setting(client: TestClient) -> None:
@@ -97,10 +114,13 @@ def test_marketplace_recommendation_and_showcase_api(client: TestClient) -> None
 
     showcase = client.get("/api/v1/showcase", params={"category": "Coding"})
     assert showcase.status_code == 200
-    items = showcase.json()["items"]
+    payload = showcase.json()
+    items = payload["items"]
     assert len(items) == 1
     assert items[0]["slug"] == "repository-review-pilot"
     assert "best_for" in items[0]
+    assert "categories" in payload
+    assert "Research" in payload["categories"]
 
     showcase_detail = client.get("/api/v1/showcase/repository-review-pilot")
     assert showcase_detail.status_code == 200
@@ -471,6 +491,92 @@ def test_trust_breakdown_tracks_consensus_and_repairs(client: TestClient) -> Non
     assert payload["trust_score"]["config_consensus"] > 0
 
 
+def test_marketplace_and_stack_votes_are_recorded_and_exposed(client: TestClient) -> None:
+    mcp_vote = client.post(
+        "/api/v1/marketplace/context7/vote",
+        json={"vote_type": "up", "voter_key": "tester-1"},
+    )
+    assert mcp_vote.status_code == 202
+    assert mcp_vote.json()["result"]["summary"]["up"] == 1
+
+    stack_vote = client.post(
+        "/api/v1/stacks/github-developer-stack/vote",
+        json={"vote_type": "down", "voter_key": "tester-2"},
+    )
+    assert stack_vote.status_code == 202
+    assert stack_vote.json()["result"]["summary"]["down"] == 1
+
+    detail = client.get("/api/v1/marketplace/context7")
+    assert detail.status_code == 200
+    assert detail.json()["votes"]["up"] == 1
+
+    stack_detail = client.get("/api/v1/stacks/github-developer-stack")
+    assert stack_detail.status_code == 200
+    assert stack_detail.json()["votes"]["down"] == 1
+
+
+def test_full_text_search_expands_for_marketplace_stacks_and_showcase(client: TestClient) -> None:
+    create_mcp = client.post(
+        "/api/v1/submissions/mcp",
+        headers=AUTH_HEADERS,
+        json={
+            "repo_url": "https://github.com/example/searchable-docs-mcp",
+            "name": "Searchable Docs MCP",
+            "description": "Documentation helper.",
+            "category": "Knowledge workflows",
+            "install_method": "remote",
+            "language": "Remote",
+            "tags": ["sources-quickly", "docs"],
+            "submitted_by": "gui-admin",
+        },
+    )
+    assert create_mcp.status_code == 201
+
+    create_stack = client.post(
+        "/api/v1/submissions/stack",
+        headers=AUTH_HEADERS,
+        json={
+            "title": "Sources Quickly Stack",
+            "description": "Collect answers from docs.",
+            "use_case": "Gather sources quickly for documentation lookups.",
+            "recommended_model": "moonshot/kimi-k2.5",
+            "example_prompt": "Find sources quickly for this API question.",
+            "items": ["searchable-docs-mcp"],
+            "created_by": "gui-admin",
+            "is_public": True,
+        },
+    )
+    assert create_stack.status_code == 201
+
+    create_showcase = client.post(
+        "/api/v1/submissions/showcase",
+        headers=AUTH_HEADERS,
+        json={
+            "title": "Docs Lookup Assistant",
+            "description": "Find answers across docs with **fast** retrieval.",
+            "use_case": "Research product docs and gather sources quickly.",
+            "category": "Knowledge workflows",
+            "example_prompt": "Gather sources quickly for this API question.",
+            "stack_slug": "sources-quickly-stack",
+            "created_by": "gui-admin",
+            "is_public": True,
+        },
+    )
+    assert create_showcase.status_code == 201
+
+    marketplace = client.get("/api/v1/marketplace", params={"q": "sources quickly"})
+    assert marketplace.status_code == 200
+    assert any(item["slug"] == "searchable-docs-mcp" for item in marketplace.json()["items"])
+
+    stacks = client.get("/api/v1/stacks", params={"q": "sources quickly"})
+    assert stacks.status_code == 200
+    assert any(item["slug"] == "sources-quickly-stack" for item in stacks.json()["items"])
+
+    showcase = client.get("/api/v1/showcase", params={"q": "sources quickly"})
+    assert showcase.status_code == 200
+    assert any(item["slug"] == "docs-lookup-assistant" for item in showcase.json()["items"])
+
+
 def test_reliable_sort_prefers_trust_over_raw_success_rate(client: TestClient) -> None:
     fixtures = [
         ("trust-fragile-mcp", "Trust Fragile MCP"),
@@ -619,6 +725,42 @@ def test_submit_mcp_api_creates_new_registry_entry(client: TestClient) -> None:
     items = marketplace.json()["items"]
     assert len(items) == 1
     assert items[0]["repo_url"] == "https://github.com/example/super-browser-mcp"
+
+
+def test_submit_mcp_api_can_infer_metadata_from_repo_hints(
+    client: TestClient, monkeypatch
+) -> None:
+    def fake_fetch(url: str):
+        if url.endswith("/languages"):
+            return {"TypeScript": 1200, "JavaScript": 200}
+        if url.endswith("/contents"):
+            return [{"name": "package.json"}, {"name": "README.md"}]
+        return {
+            "name": "ops-guardian-mcp",
+            "description": "Monitoring and DevOps MCP for incident response.",
+            "topics": ["monitoring", "devops", "security"],
+        }
+
+    monkeypatch.setattr(HubStore, "_fetch_github_json", staticmethod(fake_fetch))
+
+    response = client.post(
+        "/api/v1/submissions/mcp",
+        headers=AUTH_HEADERS,
+        json={
+            "repo_url": "https://github.com/example/ops-guardian-mcp",
+            "submitted_by": "gui-admin",
+        },
+    )
+    assert response.status_code == 201
+    payload = response.json()
+    item = payload["item"]
+
+    assert item["slug"] == "ops-guardian-mcp"
+    assert item["name"] == "ops-guardian-mcp"
+    assert item["install_method"] == "npm"
+    assert item["language"] == "TypeScript"
+    assert item["category"] in {"Monitoring", "DevOps", "Security"}
+    assert "monitoring" in item["tags"]
 
 
 def test_submit_mcp_api_deduplicates_known_repositories(client: TestClient) -> None:

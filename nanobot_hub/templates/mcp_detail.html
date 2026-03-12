@@ -5,13 +5,14 @@
       <div class="page-header-copy">
         <p class="eyebrow">Marketplace Detail</p>
         <h2>{{ item.name }}</h2>
-        <p class="muted">{{ item.description }}</p>
+        <div class="text-markdown muted">{{ render_markdown(item.description) | safe }}</div>
       </div>
     </div>
     <div class="page-meta-bar">
       <span class="meta-chip {{ item.reliability.tone }}" title="Reliability is the smoothed success rate of recent MCP runs. It tells you how often this MCP completes successfully."><strong>Reliability</strong>{% if item.has_live_telemetry %}{{ item.reliability.label }} · {{ item.reliability.percent }}%{% else %}{{ item.reliability.label }}{% endif %}</span>
       <span class="meta-chip {{ item.trust_score.tone }}" title="Trust Score is the overall quality index. It combines performance, config consensus, repair success, and verification signals."><strong>Trust Score</strong>{% if item.has_live_telemetry %}{{ item.trust_score.score }}/10{% else %}Needs telemetry{% endif %}</span>
       <span class="meta-chip {{ item.install_confidence.tone }}" title="Confidence measures how strong the community evidence is. It grows with 30-day run volume and the number of independent instances."><strong>Confidence</strong>{{ item.install_confidence.score }}/10</span>
+      <span class="meta-chip"><strong>Votes</strong>{{ item.votes.score_percent|round(0)|int }}% · {{ item.votes.total }}</span>
       <span class="meta-chip {{ item.runtime_engine.tone }}"><strong>Runtime</strong>{{ item.runtime_engine.label }}</span>
       <span class="meta-chip {{ item.mcp_type.tone }}"><strong>Type</strong>{{ item.mcp_type.label }}</span>
       <span class="meta-chip"><strong>Repository</strong>{{ item.repo_url }}</span>
@@ -81,6 +82,17 @@
           <button class="secondary" type="button" onclick="copyHubValue('{{ local_gui_url }}/community/mcp/{{ item.slug }}', this)">Copy import URL</button>
         </div>
       {% endif %}
+      <div class="vote-strip" style="margin-top: 16px;">
+        <form method="post" action="/mcp/{{ item.slug }}/vote">
+          <input type="hidden" name="vote_type" value="up">
+          <button class="secondary" type="submit">👍 {{ item.votes.up }}</button>
+        </form>
+        <form method="post" action="/mcp/{{ item.slug }}/vote">
+          <input type="hidden" name="vote_type" value="down">
+          <button class="secondary" type="submit">👎 {{ item.votes.down }}</button>
+        </form>
+        <span class="pill neutral">{{ item.votes.label }}</span>
+      </div>
     </section>
   </div>
 

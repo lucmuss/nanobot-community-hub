@@ -5,7 +5,7 @@
       <div class="page-header-copy">
         <p class="eyebrow">Showcase Detail</p>
         <h2>{{ item.title }}</h2>
-        <p class="muted">{{ item.description }}</p>
+        <div class="text-markdown muted">{{ render_markdown(item.description) | safe }}</div>
       </div>
       <div class="page-header-actions">
         {% if item.stack %}
@@ -33,7 +33,7 @@
   <div class="panel-grid two" style="margin-top:24px;">
     <section class="panel">
       <p class="eyebrow">Use Case</p>
-      <p style="margin:0;">{{ item.use_case }}</p>
+      <div class="text-markdown" style="margin:0;">{{ render_markdown(item.use_case) | safe }}</div>
       {% if item.best_for %}
         <div class="tool-list" style="margin-top: 14px;">
           {% for entry in item.best_for %}

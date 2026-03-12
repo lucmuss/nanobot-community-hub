@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import html
+import re
 import os
 import hmac
 import secrets
@@ -33,6 +35,7 @@ class HubSettings:
 
 
 def create_app() -> FastAPI:
+    _TEMPLATES.env.globals["render_markdown"] = _render_markdown_preview
     database_url = os.getenv("NANOBOT_HUB_DATABASE_URL", "").strip()
     if not database_url:
         db_path = Path(os.getenv("NANOBOT_HUB_DB_PATH", "./data/nanobot-community-hub.sqlite3")).expanduser()
@@ -414,6 +417,21 @@ def create_app() -> FastAPI:
             },
         )
 
+    @app.post("/mcp/{slug}/vote")
+    async def mcp_vote_submit(request: Request, slug: str) -> RedirectResponse:
+        form = await request.form()
+        vote_type = str(form.get("vote_type", "")).strip().lower()
+        voter_key = _get_or_create_voter_key(request)
+        try:
+            store.record_vote("mcp", slug, voter_key, vote_type)
+        except ValueError as exc:
+            _set_flash(request, str(exc), level="error")
+        else:
+            _set_flash(request, "Community vote saved.")
+        response = RedirectResponse(f"/mcp/{slug}", status_code=303)
+        _attach_voter_cookie(response, voter_key)
+        return response
+
     @app.get("/stacks", response_class=HTMLResponse)
     async def stacks_page(request: Request, q: str = Query("")) -> HTMLResponse:
         items = store.list_stacks(search=q.strip())
@@ -458,6 +476,21 @@ def create_app() -> FastAPI:
                 "local_gui_url": str(runtime_settings.get("default_gui_url", "")).strip(),
             },
         )
+
+    @app.post("/stacks/{slug}/vote")
+    async def stack_vote_submit(request: Request, slug: str) -> RedirectResponse:
+        form = await request.form()
+        vote_type = str(form.get("vote_type", "")).strip().lower()
+        voter_key = _get_or_create_voter_key(request)
+        try:
+            store.record_vote("stack", slug, voter_key, vote_type)
+        except ValueError as exc:
+            _set_flash(request, str(exc), level="error")
+        else:
+            _set_flash(request, "Community vote saved.")
+        response = RedirectResponse(f"/stacks/{slug}", status_code=303)
+        _attach_voter_cookie(response, voter_key)
+        return response
 
     @app.get("/showcase", response_class=HTMLResponse)
     async def showcase_page(
@@ -666,6 +699,19 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="MCP server not found.")
         return item
 
+    @app.post("/api/v1/marketplace/{slug}/vote")
+    async def api_marketplace_vote(request: Request, slug: str) -> JSONResponse:
+        payload = await request.json()
+        vote_type = str(payload.get("vote_type", "")).strip().lower()
+        voter_key = str(payload.get("voter_key", "")).strip() or _get_or_create_voter_key(request)
+        try:
+            result = store.record_vote("mcp", slug, voter_key, vote_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response = JSONResponse({"ok": True, "result": result}, status_code=202)
+        _attach_voter_cookie(response, voter_key)
+        return response
+
     @app.get("/api/v1/marketplace/{slug}/recommendation")
     async def api_marketplace_recommendation(slug: str) -> dict[str, Any]:
         item = store.get_mcp(slug)
@@ -687,10 +733,24 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Stack not found.")
         return item
 
+    @app.post("/api/v1/stacks/{slug}/vote")
+    async def api_stack_vote(request: Request, slug: str) -> JSONResponse:
+        payload = await request.json()
+        vote_type = str(payload.get("vote_type", "")).strip().lower()
+        voter_key = str(payload.get("voter_key", "")).strip() or _get_or_create_voter_key(request)
+        try:
+            result = store.record_vote("stack", slug, voter_key, vote_type)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        response = JSONResponse({"ok": True, "result": result}, status_code=202)
+        _attach_voter_cookie(response, voter_key)
+        return response
+
     @app.get("/api/v1/showcase")
     async def api_showcase(q: str = Query(""), category: str = Query("")) -> dict[str, Any]:
         return {
             "items": store.list_showcase(search=q.strip(), category=category.strip()),
+            "categories": store.showcase_categories(),
         }
 
     @app.get("/api/v1/showcase/{slug}")
@@ -818,6 +878,101 @@ def _split_csv(value: str) -> list[str]:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _render_markdown_preview(content: str) -> str:
+    """Render a small markdown subset for hub descriptions."""
+    return _render_markdown_html(content, empty_html="<p class='muted'>No description yet.</p>")
+
+
+def _render_markdown_html(content: str, *, empty_html: str) -> str:
+    raw = str(content or "").replace("\r\n", "\n").strip()
+    if not raw:
+        return empty_html
+
+    blocks: list[str] = []
+    paragraph: list[str] = []
+    list_items: list[str] = []
+    in_code_block = False
+    code_lines: list[str] = []
+
+    def flush_paragraph() -> None:
+        nonlocal paragraph
+        if paragraph:
+            blocks.append(f"<p>{_render_inline_markdown(' '.join(paragraph))}</p>")
+            paragraph = []
+
+    def flush_list() -> None:
+        nonlocal list_items
+        if list_items:
+            blocks.append("<ul>" + "".join(list_items) + "</ul>")
+            list_items = []
+
+    def flush_code_block() -> None:
+        nonlocal code_lines
+        escaped = html.escape("\n".join(code_lines))
+        blocks.append(f"<pre><code>{escaped}</code></pre>")
+        code_lines = []
+
+    for raw_line in raw.split("\n"):
+        line = raw_line.rstrip()
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            flush_paragraph()
+            flush_list()
+            if in_code_block:
+                flush_code_block()
+                in_code_block = False
+            else:
+                in_code_block = True
+            continue
+
+        if in_code_block:
+            code_lines.append(line)
+            continue
+
+        if not stripped:
+            flush_paragraph()
+            flush_list()
+            continue
+
+        heading = re.sub(r"^#{1,3}\s+", "", stripped)
+        if heading != stripped and stripped.startswith("#"):
+            flush_paragraph()
+            flush_list()
+            level = min(4, max(2, len(stripped) - len(stripped.lstrip("#")) + 1))
+            blocks.append(f"<h{level}>{_render_inline_markdown(heading)}</h{level}>")
+            continue
+
+        if stripped.startswith(("- ", "* ")):
+            flush_paragraph()
+            list_items.append(f"<li>{_render_inline_markdown(stripped[2:].strip())}</li>")
+            continue
+
+        paragraph.append(stripped)
+
+    if in_code_block:
+        flush_code_block()
+    flush_paragraph()
+    flush_list()
+    return "".join(blocks) if blocks else empty_html
+
+
+def _render_inline_markdown(text: str) -> str:
+    escaped = html.escape(str(text or ""))
+    escaped = re.sub(r"`([^`]+)`", r"<code>\1</code>", escaped)
+    escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
+    escaped = re.sub(r"(?<!\*)\*([^*]+)\*(?!\*)", r"<em>\1</em>", escaped)
+    escaped = re.sub(
+        r"\[([^\]]+)\]\((https?://[^)\s]+)\)",
+        lambda match: (
+            f'<a href="{html.escape(match.group(2), quote=True)}" target="_blank" rel="noreferrer">'
+            f"{match.group(1)}</a>"
+        ),
+        escaped,
+    )
+    return escaped
+
+
 def _current_admin(request: Request, auth_service: HubAuthService) -> HubAdminUser | None:
     session_admin_id = request.session.get("hub_admin_id")
     try:
@@ -865,3 +1020,22 @@ def _extract_api_token(request: Request) -> str:
     if auth_header.lower().startswith("bearer "):
         return auth_header[7:].strip()
     return str(request.headers.get("x-nanobot-hub-token", "")).strip()
+
+
+def _get_or_create_voter_key(request: Request) -> str:
+    existing = str(request.cookies.get("nanobot_hub_voter", "")).strip()
+    if existing:
+        return existing
+    return secrets.token_urlsafe(18)
+
+
+def _attach_voter_cookie(response: JSONResponse | RedirectResponse, voter_key: str) -> None:
+    if not str(voter_key or "").strip():
+        return
+    response.set_cookie(
+        key="nanobot_hub_voter",
+        value=str(voter_key).strip(),
+        max_age=60 * 60 * 24 * 365,
+        httponly=False,
+        samesite="lax",
+    )
